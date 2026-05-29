@@ -95,7 +95,7 @@ class BinanceFeed:
             self.candles.clear()
             for row in data:
                 self.candles.append(Bar(
-                    timestamp=row[0] / 1000,
+                    timestamp=int(row[0]) / 1000,
                     open=float(row[1]),
                     high=float(row[2]),
                     low=float(row[3]),

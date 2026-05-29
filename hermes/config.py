@@ -28,9 +28,9 @@ TICK_INTERVAL_SECONDS        = 5    # aggregate Binance ticks into N-second bars
 TICK_HISTORY                 = 200  # bars kept in Markov buffer
 CANDLE_HISTORY               = 50   # 1m candles kept for SMC
 
-# Binance
-BINANCE_WS_URL  = "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
-BINANCE_REST_URL = "https://api.binance.com/api/v3"
+# Binance — use binance.us endpoints (binance.com is geo-blocked on US AWS)
+BINANCE_WS_URL   = "wss://stream.binance.us:9443/ws/btcusdt@aggTrade"
+BINANCE_REST_URL = "https://api.binance.us/api/v3"
 
 # Polymarket
 CLOB_HOST    = "https://clob.polymarket.com"
