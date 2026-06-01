@@ -2,9 +2,8 @@
 Polymarket market discovery via Gamma API.
 Returns active Bitcoin Up/Down markets with their token IDs.
 """
-import re
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime, timezone
 
 import aiohttp
 
@@ -18,30 +17,43 @@ class BTCMarket:
     end_date_iso: str
     yes_token_id: str
     no_token_id: str
-    yes_price: float   # current mid-price for YES (Up) share
+    yes_price: float
     no_price: float
 
 
 async def get_active_btc_markets() -> list[BTCMarket]:
     """
     Query Gamma API for active short-window BTC Up/Down markets.
-    These are the 15-minute window prediction markets.
+    NOTE: do NOT use tag_slug — it returns unrelated markets.
+    Fetch a broad list and filter by question text + end date.
     """
     url = f"{GAMMA_HOST}/markets"
     params = {
         "active": "true",
         "closed": "false",
-        "tag_slug": "crypto",
-        "limit": 100,
+        "limit": 200,
+        "order": "endDateIso",
+        "ascending": "true",
     }
     async with aiohttp.ClientSession() as session:
         async with session.get(url, params=params) as resp:
             data = await resp.json()
 
+    now = datetime.now(timezone.utc)
     results = []
+
     for m in data:
         q = m.get("question", "")
-        if "Bitcoin Up or Down" not in q and "Bitcoin up or down" not in q.lower():
+        if "bitcoin up or down" not in q.lower():
+            continue
+
+        # Skip markets that have already ended
+        end_str = m.get("endDate", "")
+        try:
+            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+            if end_dt <= now:
+                continue
+        except (ValueError, AttributeError):
             continue
 
         tokens = m.get("tokens", [])
@@ -56,14 +68,13 @@ async def get_active_btc_markets() -> list[BTCMarket]:
         results.append(BTCMarket(
             condition_id=m["conditionId"],
             question=q,
-            end_date_iso=m.get("endDate", ""),
+            end_date_iso=end_str,
             yes_token_id=yes_tok["token_id"],
             no_token_id=no_tok["token_id"],
             yes_price=float(yes_tok.get("price", 0.5)),
             no_price=float(no_tok.get("price", 0.5)),
         ))
 
-    # Sort by soonest resolution first
     results.sort(key=lambda x: x.end_date_iso)
     return results
 
