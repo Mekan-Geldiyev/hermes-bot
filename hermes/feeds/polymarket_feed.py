@@ -24,10 +24,12 @@ class BTCMarket:
     no_price: float
 
 
-def _window_slugs(n: int = 8) -> list[str]:
-    """Current + next N five-minute window slugs."""
-    base = (int(time.time()) // 300) * 300
-    return [f"btc-updown-5m-{base + i * 300}" for i in range(n)]
+WINDOW_SECONDS = 900  # 15-minute markets
+
+def _window_slugs(n: int = 6) -> list[str]:
+    """Current + next N fifteen-minute window slugs."""
+    base = (int(time.time()) // WINDOW_SECONDS) * WINDOW_SECONDS
+    return [f"btc-updown-15m-{base + i * WINDOW_SECONDS}" for i in range(n)]
 
 
 async def get_active_btc_markets() -> list[BTCMarket]:
