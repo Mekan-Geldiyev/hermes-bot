@@ -22,7 +22,7 @@ def run_monte_carlo(
     current_state: int,
     n_paths: int = 500,
     n_steps: int = 10,
-    edge_threshold: float = 0.55,
+    edge_threshold: float = 0.52,
 ) -> MCResult:
     """
     Simulate n_paths Markov chains of n_steps from current_state.

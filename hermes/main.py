@@ -41,13 +41,13 @@ RESOLVE_CHECK_SECONDS  = 60   # how often to check for trade resolution
 def _signals_converge(markov_signal, mc_signal, smc_signal) -> tuple[bool, str]:
     votes   = [markov_signal, mc_signal, smc_signal]
     defined = [v for v in votes if v is not None]
-    if len(defined) < 3:
+    if len(defined) < 2:
         return False, "NO_TRADE"
     bulls = defined.count("BULL")
     bears = defined.count("BEAR")
-    if bulls == 3:
+    if bulls >= 2:
         return True, "BULL"
-    if bears == 3:
+    if bears >= 2:
         return True, "BEAR"
     return False, "NO_TRADE"
 
