@@ -1,16 +1,15 @@
 """
 Lightweight HTTP API server for the Hermes paper trading bot.
-Exposes trade ledger and live status so the dashboard can read real data.
 
 Endpoints:
-  GET /trades   → full paper_trades.json ledger
-  GET /status   → { running, last_price, last_tick }
+  GET /trades        → full paper_trades.json ledger
+  GET /status        → { running, last_price, last_tick }
+  GET /logs?n=100    → last N lines of hermes.log, colour-tagged
 
 Runs on port 8080 (configurable via API_PORT env var).
 CORS is open so the Next.js frontend can reach it from any origin.
 """
 import os
-import time
 from datetime import datetime, timezone
 
 from aiohttp import web
@@ -26,10 +25,30 @@ _status: dict = {
 
 API_PORT = int(os.getenv("API_PORT", "8080"))
 
+# hermes.log sits one directory above this file (repo root)
+LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "hermes.log")
+
 
 def update_status(price: float) -> None:
     _status["last_price"] = price
     _status["last_tick"]  = datetime.now(timezone.utc).isoformat()
+
+
+# ─── log colour tagging ───────────────────────────────────────────────────────
+
+def _tag_line(line: str) -> str:
+    l = line.lower()
+    if any(w in l for w in ["error", "traceback", "exception", "failed", "451", "rejected"]):
+        return "error"
+    if any(w in l for w in ["win ✓", "trade placed", "trade logged", "websocket connected"]):
+        return "success"
+    if any(w in l for w in ["no trade", "veto", "mismatch", "skip", "split"]):
+        return "warn"
+    if any(w in l for w in ["fire", "new market", "converge=true"]):
+        return "highlight"
+    if any(w in l for w in ["markov=", "mc=", "smc=", "converge="]):
+        return "signal"
+    return "info"
 
 
 # ─── handlers ─────────────────────────────────────────────────────────────────
@@ -42,6 +61,21 @@ async def handle_status(request: web.Request) -> web.Response:
     return web.json_response(_status)
 
 
+async def handle_logs(request: web.Request) -> web.Response:
+    n = min(int(request.query.get("n", 150)), 500)
+    try:
+        with open(LOG_PATH, errors="replace") as f:
+            all_lines = f.readlines()
+        lines = [
+            {"text": line.rstrip(), "tag": _tag_line(line)}
+            for line in all_lines[-n:]
+            if line.strip()
+        ]
+    except FileNotFoundError:
+        lines = []
+    return web.json_response({"lines": lines})
+
+
 # ─── CORS middleware ───────────────────────────────────────────────────────────
 
 @web.middleware
@@ -52,7 +86,10 @@ async def cors(request: web.Request, handler):
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
         })
-    resp = await handler(request)
+    try:
+        resp = await handler(request)
+    except Exception:
+        resp = web.Response(status=500, text="Internal error")
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp
 
@@ -63,9 +100,10 @@ async def start() -> None:
     app = web.Application(middlewares=[cors])
     app.router.add_get("/trades", handle_trades)
     app.router.add_get("/status", handle_status)
+    app.router.add_get("/logs",   handle_logs)
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)  # silence the BadHttpMessage spam
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", API_PORT)
     await site.start()
-    print(f"[API] Serving on http://0.0.0.0:{API_PORT}  (trades, status)")
+    print(f"[API] Serving on http://0.0.0.0:{API_PORT}  (trades, status, logs)")
