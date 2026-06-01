@@ -116,4 +116,4 @@ class BinanceFeed:
             print(f"[Binance] Preloaded {len(self.prices)} prices  last=${self.last_price:,.0f}")
 
     def ready(self) -> bool:
-        return len(self.prices) >= 60
+        return len(self.prices) >= 30
