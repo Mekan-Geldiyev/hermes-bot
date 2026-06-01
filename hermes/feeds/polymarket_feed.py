@@ -1,7 +1,10 @@
 """
-Polymarket market discovery via Gamma API.
-Returns active Bitcoin Up/Down markets with their token IDs.
+Polymarket market discovery.
+BTC 5-minute Up/Down markets use slug: btc-updown-5m-{unix_timestamp}
+where the timestamp is the window start time (rounded to 5-minute boundary).
 """
+import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -21,67 +24,72 @@ class BTCMarket:
     no_price: float
 
 
+def _window_slugs(n: int = 8) -> list[str]:
+    """Current + next N five-minute window slugs."""
+    base = (int(time.time()) // 300) * 300
+    return [f"btc-updown-5m-{base + i * 300}" for i in range(n)]
+
+
 async def get_active_btc_markets() -> list[BTCMarket]:
-    """
-    Query Gamma API for active short-window BTC Up/Down markets.
-    NOTE: do NOT use tag_slug — it returns unrelated markets.
-    Fetch a broad list and filter by question text + end date.
-    """
-    url = f"{GAMMA_HOST}/markets"
-    params = {
-        "active": "true",
-        "closed": "false",
-        "limit": 200,
-        "order": "endDateIso",
-        "ascending": "true",
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params) as resp:
-            data = await resp.json()
-
-    now = datetime.now(timezone.utc)
+    now     = datetime.now(timezone.utc)
     results = []
+    seen    = set()
 
-    for m in data:
-        q = m.get("question", "")
-        if "bitcoin up or down" not in q.lower():
-            continue
-
-        # Skip markets that have already ended
-        end_str = m.get("endDate", "")
-        try:
-            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-            if end_dt <= now:
+    async with aiohttp.ClientSession() as session:
+        for slug in _window_slugs(8):
+            try:
+                async with session.get(
+                    f"{GAMMA_HOST}/events",
+                    params={"slug": slug},
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    data = await resp.json()
+            except Exception:
                 continue
-        except (ValueError, AttributeError):
-            continue
 
-        tokens = m.get("tokens", [])
-        if len(tokens) < 2:
-            continue
+            if not data or not isinstance(data, list):
+                continue
 
-        yes_tok = next((t for t in tokens if t.get("outcome", "").lower() in ("yes", "up")), None)
-        no_tok  = next((t for t in tokens if t.get("outcome", "").lower() in ("no", "down")), None)
-        if not yes_tok or not no_tok:
-            continue
+            event   = data[0]
+            end_str = event.get("endDate", "")
 
-        results.append(BTCMarket(
-            condition_id=m["conditionId"],
-            question=q,
-            end_date_iso=end_str,
-            yes_token_id=yes_tok["token_id"],
-            no_token_id=no_tok["token_id"],
-            yes_price=float(yes_tok.get("price", 0.5)),
-            no_price=float(no_tok.get("price", 0.5)),
-        ))
+            try:
+                end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                if end_dt <= now:
+                    continue
+            except (ValueError, AttributeError):
+                continue
+
+            for m in event.get("markets", []):
+                cid = m.get("conditionId", "")
+                if cid in seen:
+                    continue
+
+                try:
+                    clob_ids = json.loads(m.get("clobTokenIds", "[]") or "[]")
+                except Exception:
+                    continue
+
+                if len(clob_ids) < 2:
+                    continue
+
+                try:
+                    prices    = json.loads(m.get("outcomePrices", '["0.5","0.5"]') or '["0.5","0.5"]')
+                    yes_price = float(prices[0])
+                    no_price  = float(prices[1])
+                except Exception:
+                    yes_price, no_price = 0.5, 0.5
+
+                seen.add(cid)
+                results.append(BTCMarket(
+                    condition_id  = cid,
+                    question      = m.get("question", event.get("title", slug)),
+                    end_date_iso  = end_str,
+                    yes_token_id  = clob_ids[0],
+                    no_token_id   = clob_ids[1],
+                    yes_price     = yes_price,
+                    no_price      = no_price,
+                ))
 
     results.sort(key=lambda x: x.end_date_iso)
     return results
-
-
-async def get_clob_order_book(token_id: str) -> dict:
-    """Raw CLOB order book for a token."""
-    url = f"https://clob.polymarket.com/book"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params={"token_id": token_id}) as resp:
-            return await resp.json()
