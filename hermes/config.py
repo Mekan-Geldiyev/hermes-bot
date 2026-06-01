@@ -15,6 +15,11 @@ POLYMARKET_API_PASSPHRASE = os.getenv("POLYMARKET_API_PASSPHRASE")
 MAX_TRADE_USDC           = float(os.getenv("MAX_TRADE_USDC", "50"))
 MIN_CONFIDENCE           = float(os.getenv("MIN_CONFIDENCE", "0.65"))
 
+# Email alerts
+EMAIL_FROM         = os.getenv("EMAIL_FROM", "")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
+EMAIL_TO           = os.getenv("EMAIL_TO", "nightgtwolf@gmail.com")
+
 # Paper trading
 PAPER_TRADE              = os.getenv("PAPER_TRADE", "true").lower() == "true"
 ACCOUNT_SIZE_USDC        = float(os.getenv("ACCOUNT_SIZE_USDC", "20"))

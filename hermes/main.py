@@ -29,6 +29,7 @@ from hermes.analysis.monte_carlo import run_monte_carlo
 from hermes.analysis.smc import compute_smc
 from hermes.brain.claude_agent import query_claude
 from hermes.notifications.telegram_bot import notify, send
+from hermes.notifications.email_alert import send_trade_alert, send_resolve_alert
 from hermes.api import start as start_api, update_status as api_update_status
 
 
@@ -140,12 +141,22 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket):
         )
         if trade:
             price = trade["yes_price"] if decision.direction == "BULL" else trade["no_price"]
+            bal   = get_balance()
             await send(
                 f"📋 <b>PAPER TRADE LOGGED</b>\n"
                 f"Market: {market.question}\n"
                 f"Direction: {decision.direction}  |  Odds: {price:.3f}\n"
-                f"Size: ${trade['size_usdc']:.2f} USDC  |  Balance: ${get_balance():.2f}\n"
+                f"Size: ${trade['size_usdc']:.2f} USDC  |  Balance: ${bal:.2f}\n"
                 f"Claude: {decision.confidence:.0%} — {decision.reasoning}"
+            )
+            send_trade_alert(
+                direction=decision.direction,
+                market=market.question,
+                size_usdc=trade["size_usdc"],
+                price=price,
+                confidence=decision.confidence,
+                reasoning=decision.reasoning,
+                balance=bal,
             )
         else:
             await send(f"📋 <b>PAPER SKIP</b> — size too small\nMarket: {market.question}")
@@ -197,16 +208,26 @@ async def trade_resolver(feed: BinanceFeed):
             for t in resolved:
                 icon = "✅" if t["result"] == "WIN" else "❌"
                 pnl_str = f"+${t['pnl']:.2f}" if t["pnl"] >= 0 else f"-${abs(t['pnl']):.2f}"
+                bal = get_balance()
                 print(
                     f"[Paper] {icon} RESOLVED {t['direction']} | "
-                    f"{t['result']} | P&L {pnl_str} | balance=${get_balance():.2f}"
+                    f"{t['result']} | P&L {pnl_str} | balance=${bal:.2f}"
                 )
                 await send(
                     f"{icon} <b>PAPER TRADE RESOLVED</b>\n"
                     f"Market: {t['market']}\n"
                     f"Direction: {t['direction']}  |  Result: {t['result']}\n"
                     f"Entry: ${t['entry_btc']:,.0f}  →  Exit: ${t['exit_btc']:,.0f}\n"
-                    f"P&L: {pnl_str}  |  Balance: ${get_balance():.2f}"
+                    f"P&L: {pnl_str}  |  Balance: ${bal:.2f}"
+                )
+                send_resolve_alert(
+                    direction=t["direction"],
+                    result=t["result"],
+                    entry_btc=t["entry_btc"],
+                    exit_btc=t["exit_btc"],
+                    pnl=t["pnl"],
+                    balance=bal,
+                    market=t["market"],
                 )
         except Exception:
             traceback.print_exc()
@@ -223,6 +244,10 @@ async def main_loop(feed: BinanceFeed):
     while True:
         try:
             markets = await get_active_btc_markets()
+
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            new = [m for m in markets if m.condition_id not in seen_markets]
+            print(f"[{ts} UTC] Polymarket scan: {len(markets)} BTC markets live, {len(new)} new")
 
             for market in markets:
                 if market.condition_id in seen_markets:
