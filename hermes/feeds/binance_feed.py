@@ -105,5 +105,15 @@ class BinanceFeed:
         except Exception as e:
             print(f"[Binance] candle refresh error: {e}")
 
+    async def preload(self) -> None:
+        """Fetch historical 1m closes and pre-fill the price buffer so the
+        feed is immediately ready without waiting for WebSocket to accumulate bars."""
+        await self.refresh_candles()
+        if self.candles:
+            for bar in self.candles:
+                self.prices.append(bar.close)
+            self.last_price = list(self.candles)[-1].close
+            print(f"[Binance] Preloaded {len(self.prices)} prices  last=${self.last_price:,.0f}")
+
     def ready(self) -> bool:
         return len(self.prices) >= 60

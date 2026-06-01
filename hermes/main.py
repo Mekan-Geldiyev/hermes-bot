@@ -276,6 +276,7 @@ async def main_loop(feed: BinanceFeed):
 
 async def run():
     feed = BinanceFeed()
+    await feed.preload()   # pre-fill price buffer from REST history — feed ready immediately
     await asyncio.gather(
         start_api(),
         feed.stream(),
