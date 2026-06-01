@@ -1,23 +1,24 @@
 """
 Paper trading ledger for Hermes.
 
-Writes every simulated trade to hermes/paper_trades.json.
-Tracks running account balance starting from ACCOUNT_SIZE_USDC.
-Resolves trades automatically once the market's end time has passed,
-using the live BTC price to determine win/loss.
+Win/loss is determined by Polymarket's ACTUAL resolution outcome (Chainlink BTC/USD),
+not by comparing Binance prices. This matters because Polymarket uses Chainlink as the
+price source, which can diverge from Binance spot.
 
 P&L maths (prediction market binary):
   - You spend $size buying shares at price p (e.g. YES at 0.42)
   - Shares bought = size / p
-  - WIN: receive $1 per share → pnl = (size/p) - size = size*(1-p)/p
-  - LOSE: lose your stake → pnl = -size
+  - WIN: receive $1 per share → pnl = (size/p) - size
+  - LOSE: lose your stake    → pnl = -size
 """
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from hermes.config import ACCOUNT_SIZE_USDC, MAX_POSITION_PCT
+import aiohttp
+
+from hermes.config import ACCOUNT_SIZE_USDC, MAX_POSITION_PCT, GAMMA_HOST
 
 LEDGER_PATH = os.path.join(os.path.dirname(__file__), "paper_trades.json")
 
@@ -43,15 +44,13 @@ def get_balance() -> float:
 # ─── sizing ───────────────────────────────────────────────────────────────────
 
 def kelly_size(confidence: float, price: float, balance: float) -> float:
-    """Half-Kelly on a binary prediction market bet, capped at MAX_POSITION_PCT."""
     if price <= 0.0 or price >= 1.0 or confidence <= price:
         return 0.0
-    b = (1.0 - price) / price          # decimal odds
+    b = (1.0 - price) / price
     kelly_f = (b * confidence - (1.0 - confidence)) / b
     if kelly_f <= 0.0:
         return 0.0
-    raw = kelly_f * 0.5 * balance      # half-Kelly
-    return round(min(raw, balance * MAX_POSITION_PCT), 2)
+    return round(min(kelly_f * 0.5 * balance, balance * MAX_POSITION_PCT), 2)
 
 
 # ─── record ───────────────────────────────────────────────────────────────────
@@ -59,6 +58,7 @@ def kelly_size(confidence: float, price: float, balance: float) -> float:
 def record_trade(
     market_question: str,
     market_end: str,
+    condition_id: str,
     direction: str,
     entry_btc_price: float,
     yes_price: float,
@@ -66,9 +66,6 @@ def record_trade(
     confidence: float,
     reasoning: str,
 ) -> Optional[dict]:
-    """
-    Log a paper trade. Returns the trade dict, or None if size is too small.
-    """
     ledger  = _load()
     balance = ledger["balance"]
     price   = yes_price if direction == "BULL" else no_price
@@ -79,20 +76,21 @@ def record_trade(
         return None
 
     trade = {
-        "id":            datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
-        "timestamp":     datetime.now(timezone.utc).isoformat(),
-        "market":        market_question,
-        "market_end":    market_end,
-        "direction":     direction,
-        "entry_btc":     round(entry_btc_price, 2),
-        "yes_price":     yes_price,
-        "no_price":      no_price,
-        "confidence":    round(confidence, 4),
-        "reasoning":     reasoning,
-        "size_usdc":     size,
-        "result":        None,
-        "exit_btc":      None,
-        "pnl":           None,
+        "id":           datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
+        "timestamp":    datetime.now(timezone.utc).isoformat(),
+        "market":       market_question,
+        "market_end":   market_end,
+        "condition_id": condition_id,
+        "direction":    direction,
+        "entry_btc":    round(entry_btc_price, 2),
+        "yes_price":    yes_price,
+        "no_price":     no_price,
+        "confidence":   round(confidence, 4),
+        "reasoning":    reasoning,
+        "size_usdc":    size,
+        "result":       None,
+        "exit_btc":     None,
+        "pnl":          None,
     }
 
     ledger["trades"].append(trade)
@@ -106,16 +104,59 @@ def record_trade(
     return trade
 
 
-# ─── resolve ──────────────────────────────────────────────────────────────────
+# ─── resolution via Polymarket (uses Chainlink, same as actual market) ────────
 
-def resolve_pending(current_btc: float) -> list[dict]:
+async def _polymarket_outcome(condition_id: str) -> Optional[bool]:
     """
-    Resolve any open trades whose market end time has passed.
-    Uses current_btc as the exit price to determine win/loss.
-    Returns list of newly resolved trades.
+    Returns True (Up won), False (Down won), or None (not resolved yet).
+    Queries Polymarket's actual resolution — same Chainlink source they use.
     """
-    ledger  = _load()
-    now     = datetime.now(timezone.utc)
+    if not condition_id:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{GAMMA_HOST}/markets",
+                params={"conditionId": condition_id},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                data = await resp.json()
+
+        if not data or not isinstance(data, list):
+            return None
+
+        m = data[0]
+        if not m.get("closed", False):
+            return None  # not resolved yet
+
+        prices_str = m.get("outcomePrices", "")
+        if not prices_str:
+            return None
+
+        prices = json.loads(prices_str)
+        yes_final = float(prices[0])
+
+        if yes_final >= 0.99:
+            return True   # Up won
+        if yes_final <= 0.01:
+            return False  # Down won
+        return None       # ambiguous / not resolved
+
+    except Exception as e:
+        print(f"[Paper] Resolution fetch error: {e}")
+        return None
+
+
+async def resolve_pending(fallback_btc: float) -> list[dict]:
+    """
+    Resolve open trades whose end time has passed.
+
+    1. Try to fetch Polymarket's actual resolution (Chainlink-based) — accurate.
+    2. If market not resolved yet and 10+ min have passed, fall back to
+       Binance direction comparison — approximate but fast.
+    """
+    ledger   = _load()
+    now      = datetime.now(timezone.utc)
     resolved = []
 
     for t in ledger["trades"]:
@@ -130,18 +171,27 @@ def resolve_pending(current_btc: float) -> list[dict]:
         if now < end_dt:
             continue
 
-        direction = t["direction"]
-        won = (
-            (direction == "BULL" and current_btc > t["entry_btc"]) or
-            (direction == "BEAR" and current_btc < t["entry_btc"])
-        )
+        # Wait at least 2 min after end before checking resolution
+        if now < end_dt + timedelta(minutes=2):
+            continue
 
-        price = t["yes_price"] if direction == "BULL" else t["no_price"]
+        up_won = await _polymarket_outcome(t.get("condition_id", ""))
+
+        if up_won is None:
+            # Polymarket not resolved yet — fall back to Binance after 10 min
+            if now < end_dt + timedelta(minutes=10):
+                continue
+            direction = t["direction"]
+            up_won = fallback_btc > t["entry_btc"]
+            print(f"[Paper] Using Binance fallback for resolution (Polymarket not resolved)")
+
+        won   = (t["direction"] == "BULL" and up_won) or (t["direction"] == "BEAR" and not up_won)
+        price = t["yes_price"] if t["direction"] == "BULL" else t["no_price"]
         size  = t["size_usdc"]
         pnl   = round((size / price) - size, 4) if won else -size
 
         t["result"]   = "WIN" if won else "LOSS"
-        t["exit_btc"] = round(current_btc, 2)
+        t["exit_btc"] = round(fallback_btc, 2)
         t["pnl"]      = pnl
 
         ledger["balance"] = round(ledger["balance"] + pnl, 4)

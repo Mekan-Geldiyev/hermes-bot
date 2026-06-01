@@ -132,6 +132,7 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket):
         trade = record_trade(
             market_question=market.question,
             market_end=market.end_date_iso,
+            condition_id=market.condition_id,
             direction=decision.direction,
             entry_btc_price=feed.last_price,
             yes_price=market.yes_price,
@@ -204,7 +205,7 @@ async def trade_resolver(feed: BinanceFeed):
             continue
         try:
             from hermes.paper_trader import resolve_pending, get_balance
-            resolved = resolve_pending(feed.last_price)
+            resolved = await resolve_pending(feed.last_price)
             for t in resolved:
                 icon = "✅" if t["result"] == "WIN" else "❌"
                 pnl_str = f"+${t['pnl']:.2f}" if t["pnl"] >= 0 else f"-${abs(t['pnl']):.2f}"
