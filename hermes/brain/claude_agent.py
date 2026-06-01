@@ -84,7 +84,7 @@ def query_claude(
     user_msg = _build_user_message(btc_price, markov, mc, smc, yes_price, no_price)
 
     message = client.messages.create(
-        model="claude-opus-4-7-20251101",
+        model="claude-opus-4-8",
         max_tokens=256,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_msg}],
