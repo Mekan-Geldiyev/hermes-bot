@@ -13,7 +13,7 @@ POLYMARKET_API_SECRET    = os.getenv("POLYMARKET_API_SECRET")
 POLYMARKET_API_PASSPHRASE = os.getenv("POLYMARKET_API_PASSPHRASE")
 
 MAX_TRADE_USDC           = float(os.getenv("MAX_TRADE_USDC", "50"))
-MIN_CONFIDENCE           = float(os.getenv("MIN_CONFIDENCE", "0.65"))
+MIN_CONFIDENCE           = float(os.getenv("MIN_CONFIDENCE", "0.60"))
 
 # Email alerts
 EMAIL_FROM         = os.getenv("EMAIL_FROM", "")
@@ -26,7 +26,7 @@ ACCOUNT_SIZE_USDC        = float(os.getenv("ACCOUNT_SIZE_USDC", "20"))
 MAX_POSITION_PCT         = float(os.getenv("MAX_POSITION_PCT", "0.25"))  # max 25% per trade
 
 # Analysis thresholds
-MARKOV_PERSISTENCE_THRESHOLD = float(os.getenv("MARKOV_THRESHOLD", "0.62"))
+MARKOV_PERSISTENCE_THRESHOLD = float(os.getenv("MARKOV_THRESHOLD", "0.55"))
 MONTE_CARLO_PATHS            = 500
 MONTE_CARLO_STEPS            = 10
 TICK_INTERVAL_SECONDS        = 5    # aggregate Binance ticks into N-second bars

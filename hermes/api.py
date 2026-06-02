@@ -9,10 +9,13 @@ Endpoints:
 Runs on port 8080 (configurable via API_PORT env var).
 CORS is open so the Next.js frontend can reach it from any origin.
 """
+import logging
 import os
 from datetime import datetime, timezone
 
 from aiohttp import web
+
+logging.getLogger("aiohttp.server").setLevel(logging.CRITICAL)
 
 from hermes.paper_trader import _load as load_ledger
 
