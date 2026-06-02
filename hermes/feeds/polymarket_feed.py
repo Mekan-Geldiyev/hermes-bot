@@ -38,7 +38,7 @@ async def get_active_btc_markets() -> list[BTCMarket]:
     seen    = set()
 
     async with aiohttp.ClientSession() as session:
-        for slug in _window_slugs(8):
+        for slug in _window_slugs(2):
             try:
                 async with session.get(
                     f"{GAMMA_HOST}/events",
