@@ -4,6 +4,7 @@ Receives all quantitative signals, returns a structured trading decision.
 """
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 import anthropic
@@ -49,8 +50,16 @@ def _build_user_message(
     smc: SMCResult,
     yes_price: float,
     no_price: float,
+    window_open: datetime,
+    window_end: datetime,
 ) -> str:
-    return f"""Current BTC price: ${btc_price:,.2f}
+    now = datetime.now(window_end.tzinfo)
+    mins_elapsed  = int((now - window_open).total_seconds() // 60)
+    mins_remaining = int((window_end - now).total_seconds() // 60)
+    return f"""LIVE WINDOW: {window_open.strftime('%H:%M')}–{window_end.strftime('%H:%M')} UTC | {mins_elapsed}m elapsed, {mins_remaining}m remaining
+This is the CURRENT active window. Your decision will be traded on this window only.
+
+Current BTC price: ${btc_price:,.2f}
 Polymarket YES (Up) price: {yes_price:.3f} | NO (Down) price: {no_price:.3f}
 
 === MARKOV CHAIN ({markov.n_samples} samples) ===
@@ -78,10 +87,12 @@ def query_claude(
     smc: SMCResult,
     yes_price: float,
     no_price: float,
+    window_open: datetime,
+    window_end: datetime,
 ) -> TradeDecision:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    user_msg = _build_user_message(btc_price, markov, mc, smc, yes_price, no_price)
+    user_msg = _build_user_message(btc_price, markov, mc, smc, yes_price, no_price, window_open, window_end)
 
     message = client.messages.create(
         model="claude-sonnet-4-6",

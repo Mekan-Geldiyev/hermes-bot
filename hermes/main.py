@@ -12,7 +12,7 @@ Lifecycle per 15-minute Polymarket window:
 """
 import asyncio
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from hermes.config import (
     MARKOV_PERSISTENCE_THRESHOLD,
@@ -23,7 +23,7 @@ from hermes.config import (
     PAPER_TRADE,
 )
 from hermes.feeds.binance_feed import BinanceFeed
-from hermes.feeds.polymarket_feed import get_active_btc_markets, BTCMarket
+from hermes.feeds.polymarket_feed import get_active_btc_markets, BTCMarket, WINDOW_SECONDS
 from hermes.analysis.markov import compute_markov
 from hermes.analysis.monte_carlo import run_monte_carlo
 from hermes.analysis.smc import compute_smc
@@ -58,7 +58,7 @@ def _null_smc():
     return SMCResult(bos=None, liquidity_sweep=None, fvg=None, signal=None, patterns_found=0)
 
 
-async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket):
+async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: datetime, window_end: datetime):
     prices  = list(feed.prices)
     candles = list(feed.candles)
 
@@ -93,6 +93,8 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket):
         smc=smc if smc else _null_smc(),
         yes_price=market.yes_price,
         no_price=market.no_price,
+        window_open=window_open,
+        window_end=window_end,
     )
 
     print(f"[Claude] dir={decision.direction} conf={decision.confidence:.2f} | {decision.reasoning}")
@@ -254,9 +256,23 @@ async def main_loop(feed: BinanceFeed):
                 if market.condition_id in seen_markets:
                     continue
 
+                end_dt      = datetime.fromisoformat(market.end_date_iso.replace("Z", "+00:00"))
+                window_open = end_dt - timedelta(seconds=WINDOW_SECONDS)
+                now         = datetime.now(timezone.utc)
+
+                if now < window_open:
+                    # window hasn't opened yet — don't mark seen, catch it when it opens
+                    continue
+
+                if now >= end_dt:
+                    # window already closed — mark seen and skip
+                    seen_markets.add(market.condition_id)
+                    continue
+
                 seen_markets.add(market.condition_id)
-                print(f"[Hermes] New market: {market.question} (ends {market.end_date_iso})")
-                await send(f"🔍 New market: <b>{market.question}</b>")
+                mins_left = int((end_dt - now).total_seconds() // 60)
+                print(f"[Hermes] Live window: {market.question} ({mins_left}m remaining)")
+                await send(f"🔍 Live window: <b>{market.question}</b> ({mins_left}m left)")
 
                 print(f"[Hermes] Collecting {ANALYSIS_DELAY_SECONDS}s of data…")
                 await asyncio.sleep(ANALYSIS_DELAY_SECONDS)
@@ -265,7 +281,7 @@ async def main_loop(feed: BinanceFeed):
                     print("[Hermes] Feed not ready, skip")
                     continue
 
-                await analyse_and_trade(feed, market)
+                await analyse_and_trade(feed, market, window_open, end_dt)
 
         except Exception:
             print("[Hermes] Scanner error:")
