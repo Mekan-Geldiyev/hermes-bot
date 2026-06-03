@@ -106,18 +106,22 @@ def record_trade(
 
 # ─── resolution via Polymarket (uses Chainlink, same as actual market) ────────
 
-async def _polymarket_outcome(condition_id: str) -> Optional[bool]:
+async def _polymarket_outcome(market_end_iso: str) -> Optional[bool]:
     """
     Returns True (Up won), False (Down won), or None (not resolved yet).
-    Queries Polymarket's actual resolution — same Chainlink source they use.
+    Uses the events/slug endpoint — the conditionId filter on /markets is broken.
     """
-    if not condition_id:
+    if not market_end_iso:
         return None
     try:
+        end_dt     = datetime.fromisoformat(market_end_iso.replace("Z", "+00:00"))
+        start_unix = int(end_dt.timestamp()) - 900
+        slug       = f"btc-updown-15m-{start_unix}"
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{GAMMA_HOST}/markets",
-                params={"conditionId": condition_id},
+                f"{GAMMA_HOST}/events",
+                params={"slug": slug},
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 data = await resp.json()
@@ -125,22 +129,26 @@ async def _polymarket_outcome(condition_id: str) -> Optional[bool]:
         if not data or not isinstance(data, list):
             return None
 
-        m = data[0]
+        markets = data[0].get("markets", [])
+        if not markets:
+            return None
+
+        m = markets[0]
         if not m.get("closed", False):
-            return None  # not resolved yet
+            return None
 
         prices_str = m.get("outcomePrices", "")
         if not prices_str:
             return None
 
-        prices = json.loads(prices_str)
-        yes_final = float(prices[0])
+        prices    = json.loads(prices_str)
+        up_final  = float(prices[0])   # outcomes are ["Up", "Down"], prices[0] = Up
 
-        if yes_final >= 0.99:
+        if up_final >= 0.99:
             return True   # Up won
-        if yes_final <= 0.01:
+        if up_final <= 0.01:
             return False  # Down won
-        return None       # ambiguous / not resolved
+        return None
 
     except Exception as e:
         print(f"[Paper] Resolution fetch error: {e}")
@@ -175,7 +183,7 @@ async def resolve_pending(fallback_btc: float) -> list[dict]:
         if now < end_dt + timedelta(minutes=2):
             continue
 
-        up_won = await _polymarket_outcome(t.get("condition_id", ""))
+        up_won = await _polymarket_outcome(t.get("market_end", ""))
 
         if up_won is None:
             # Polymarket not resolved yet — fall back to Binance after 10 min
