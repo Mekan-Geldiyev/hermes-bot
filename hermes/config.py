@@ -7,10 +7,8 @@ ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY")
 TELEGRAM_BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID         = os.getenv("TELEGRAM_CHAT_ID")
 
-POLYMARKET_PRIVATE_KEY   = os.getenv("POLYMARKET_PRIVATE_KEY")
-POLYMARKET_API_KEY       = os.getenv("POLYMARKET_API_KEY")
-POLYMARKET_API_SECRET    = os.getenv("POLYMARKET_API_SECRET")
-POLYMARKET_API_PASSPHRASE = os.getenv("POLYMARKET_API_PASSPHRASE")
+KALSHI_API_KEY_ID       = os.getenv("KALSHI_API_KEY_ID")
+KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 
 MAX_TRADE_USDC           = float(os.getenv("MAX_TRADE_USDC", "50"))
 MIN_CONFIDENCE           = float(os.getenv("MIN_CONFIDENCE", "0.60"))
@@ -37,7 +35,5 @@ CANDLE_HISTORY               = 50   # 1m candles kept for SMC
 BINANCE_WS_URL   = "wss://stream.binance.us:9443/ws/btcusdt@aggTrade"
 BINANCE_REST_URL = "https://api.binance.us/api/v3"
 
-# Polymarket
-CLOB_HOST    = "https://clob.polymarket.com"
-GAMMA_HOST   = "https://gamma-api.polymarket.com"
-POLYGON_CHAIN_ID = 137
+# Kalshi
+KALSHI_BASE = "https://external-api.kalshi.com/trade-api/v2"

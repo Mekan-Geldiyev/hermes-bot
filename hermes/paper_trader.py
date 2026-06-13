@@ -1,12 +1,11 @@
 """
 Paper trading ledger for Hermes.
 
-Win/loss is determined by Polymarket's ACTUAL resolution outcome (Chainlink BTC/USD),
-not by comparing Binance prices. This matters because Polymarket uses Chainlink as the
-price source, which can diverge from Binance spot.
+Win/loss is determined by Kalshi's actual resolution (result field on the market).
+Kalshi uses CF Benchmarks BRTI as the price oracle.
 
 P&L maths (prediction market binary):
-  - You spend $size buying shares at price p (e.g. YES at 0.42)
+  - You spend $size buying shares at price p (e.g. YES at 0.44)
   - Shares bought = size / p
   - WIN: receive $1 per share → pnl = (size/p) - size
   - LOSE: lose your stake    → pnl = -size
@@ -18,7 +17,7 @@ from typing import Optional
 
 import aiohttp
 
-from hermes.config import ACCOUNT_SIZE_USDC, MAX_POSITION_PCT, GAMMA_HOST
+from hermes.config import ACCOUNT_SIZE_USDC, MAX_POSITION_PCT
 
 LEDGER_PATH = os.path.join(os.path.dirname(__file__), "paper_trades.json")
 
@@ -56,19 +55,19 @@ def kelly_size(confidence: float, price: float, balance: float) -> float:
 # ─── record ───────────────────────────────────────────────────────────────────
 
 def record_trade(
-    market_question: str,
-    market_end: str,
-    condition_id: str,
+    market_title: str,
+    close_time: str,
+    ticker: str,
     direction: str,
     entry_btc_price: float,
-    yes_price: float,
-    no_price: float,
+    yes_ask: float,
+    no_ask: float,
     confidence: float,
     reasoning: str,
 ) -> Optional[dict]:
     ledger  = _load()
     balance = ledger["balance"]
-    price   = yes_price if direction == "BULL" else no_price
+    price   = yes_ask if direction == "BULL" else no_ask
     size    = kelly_size(confidence, price, balance)
 
     if size < 0.05:
@@ -76,21 +75,21 @@ def record_trade(
         return None
 
     trade = {
-        "id":           datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
-        "timestamp":    datetime.now(timezone.utc).isoformat(),
-        "market":       market_question,
-        "market_end":   market_end,
-        "condition_id": condition_id,
-        "direction":    direction,
-        "entry_btc":    round(entry_btc_price, 2),
-        "yes_price":    yes_price,
-        "no_price":     no_price,
-        "confidence":   round(confidence, 4),
-        "reasoning":    reasoning,
-        "size_usdc":    size,
-        "result":       None,
-        "exit_btc":     None,
-        "pnl":          None,
+        "id":         datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
+        "timestamp":  datetime.now(timezone.utc).isoformat(),
+        "market":     market_title,
+        "close_time": close_time,
+        "ticker":     ticker,
+        "direction":  direction,
+        "entry_btc":  round(entry_btc_price, 2),
+        "yes_price":  yes_ask,
+        "no_price":   no_ask,
+        "confidence": round(confidence, 4),
+        "reasoning":  reasoning,
+        "size_usdc":  size,
+        "result":     None,
+        "exit_btc":   None,
+        "pnl":        None,
     }
 
     ledger["trades"].append(trade)
@@ -99,69 +98,49 @@ def record_trade(
     print(
         f"[Paper] 📋 LOGGED {direction} | size=${size:.2f} | "
         f"odds={price:.3f} | conf={confidence:.0%} | "
-        f"balance=${balance:.2f} | market: {market_question}"
+        f"balance=${balance:.2f} | market: {market_title}"
     )
     return trade
 
 
-# ─── resolution via Polymarket (uses Chainlink, same as actual market) ────────
+# ─── resolution via Kalshi ────────────────────────────────────────────────────
 
-async def _polymarket_outcome(market_end_iso: str) -> Optional[bool]:
+async def _kalshi_outcome(ticker: str) -> Optional[bool]:
     """
-    Returns True (Up won), False (Down won), or None (not resolved yet).
-    Uses the events/slug endpoint — the conditionId filter on /markets is broken.
+    Returns True (YES/Up won), False (NO/Down won), or None (not resolved yet).
+    Queries the market's result field directly from Kalshi.
     """
-    if not market_end_iso:
+    if not ticker:
         return None
     try:
-        end_dt     = datetime.fromisoformat(market_end_iso.replace("Z", "+00:00"))
-        start_unix = int(end_dt.timestamp()) - 900
-        slug       = f"btc-updown-15m-{start_unix}"
-
+        from hermes.feeds.kalshi_feed import kalshi_headers, KALSHI_BASE
+        path = f"/trade-api/v2/markets/{ticker}"
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{GAMMA_HOST}/events",
-                params={"slug": slug},
+                f"{KALSHI_BASE}/markets/{ticker}",
+                headers=kalshi_headers("GET", path),
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 data = await resp.json()
 
-        if not data or not isinstance(data, list):
-            return None
-
-        markets = data[0].get("markets", [])
-        if not markets:
-            return None
-
-        m = markets[0]
-        if not m.get("closed", False):
-            return None
-
-        prices_str = m.get("outcomePrices", "")
-        if not prices_str:
-            return None
-
-        prices    = json.loads(prices_str)
-        up_final  = float(prices[0])   # outcomes are ["Up", "Down"], prices[0] = Up
-
-        if up_final >= 0.99:
-            return True   # Up won
-        if up_final <= 0.01:
-            return False  # Down won
+        result = data.get("market", {}).get("result", "")
+        if result == "yes":
+            return True
+        if result == "no":
+            return False
         return None
 
     except Exception as e:
-        print(f"[Paper] Resolution fetch error: {e}")
+        print(f"[Paper] Kalshi resolution error: {e}")
         return None
 
 
 async def resolve_pending(fallback_btc: float) -> list[dict]:
     """
-    Resolve open trades whose end time has passed.
+    Resolve open trades whose close_time has passed.
 
-    1. Try to fetch Polymarket's actual resolution (Chainlink-based) — accurate.
-    2. If market not resolved yet and 10+ min have passed, fall back to
-       Binance direction comparison — approximate but fast.
+    1. Query Kalshi for the market result field — resolves within seconds of close.
+    2. If not resolved yet and 10+ min have passed, fall back to Binance direction.
     """
     ledger   = _load()
     now      = datetime.now(timezone.utc)
@@ -171,27 +150,25 @@ async def resolve_pending(fallback_btc: float) -> list[dict]:
         if t["result"] is not None:
             continue
 
+        close_field = t.get("close_time") or t.get("market_end", "")
         try:
-            end_dt = datetime.fromisoformat(t["market_end"].replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(close_field.replace("Z", "+00:00"))
         except (ValueError, TypeError):
             continue
 
         if now < end_dt:
             continue
 
-        # Wait at least 2 min after end before checking resolution
         if now < end_dt + timedelta(minutes=2):
             continue
 
-        up_won = await _polymarket_outcome(t.get("market_end", ""))
+        up_won = await _kalshi_outcome(t.get("ticker", ""))
 
         if up_won is None:
-            # Polymarket not resolved yet — fall back to Binance after 10 min
             if now < end_dt + timedelta(minutes=10):
                 continue
-            direction = t["direction"]
             up_won = fallback_btc > t["entry_btc"]
-            print(f"[Paper] Using Binance fallback for resolution (Polymarket not resolved)")
+            print(f"[Paper] Using Binance fallback for resolution (Kalshi not resolved yet)")
 
         won   = (t["direction"] == "BULL" and up_won) or (t["direction"] == "BEAR" and not up_won)
         price = t["yes_price"] if t["direction"] == "BULL" else t["no_price"]

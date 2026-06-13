@@ -1,18 +1,18 @@
 """
 Hermes — main event loop.
 
-Lifecycle per 15-minute Polymarket window:
-  1. Wait for a new BTC Up/Down market to appear
+Lifecycle per 15-minute Kalshi window:
+  1. Poll for the currently live BTC Up/Down market (KXBTC15M series)
   2. Collect 90 seconds of Binance tick data
   3. Run Markov → Monte Carlo → SMC
   4. Ask Claude to synthesise
-  5. If all signals agree and confidence ≥ threshold → log paper trade (or place real order)
+  5. If all signals agree and confidence ≥ threshold → paper trade or live Kalshi order
   6. Telegram notification either way
-  7. Periodically resolve completed paper trades using live BTC price
+  7. Periodically resolve completed trades using Kalshi result field
 """
 import asyncio
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from hermes.config import (
     MARKOV_PERSISTENCE_THRESHOLD,
@@ -23,7 +23,7 @@ from hermes.config import (
     PAPER_TRADE,
 )
 from hermes.feeds.binance_feed import BinanceFeed
-from hermes.feeds.polymarket_feed import get_active_btc_markets, BTCMarket, WINDOW_SECONDS
+from hermes.feeds.kalshi_feed import get_current_btc_market, KalshiMarket
 from hermes.analysis.markov import compute_markov
 from hermes.analysis.monte_carlo import run_monte_carlo
 from hermes.analysis.smc import compute_smc
@@ -36,7 +36,7 @@ from hermes.api import start as start_api, update_status as api_update_status
 ANALYSIS_DELAY_SECONDS = 90
 SCAN_INTERVAL_SECONDS  = 30
 CANDLE_REFRESH_SECONDS = 60
-RESOLVE_CHECK_SECONDS  = 60   # how often to check for trade resolution
+RESOLVE_CHECK_SECONDS  = 60
 
 
 def _signals_converge(markov_signal, mc_signal, smc_signal) -> tuple[bool, str]:
@@ -58,7 +58,7 @@ def _null_smc():
     return SMCResult(bos=None, liquidity_sweep=None, fvg=None, signal=None, patterns_found=0)
 
 
-async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: datetime, window_end: datetime):
+async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open: datetime, window_end: datetime):
     prices  = list(feed.prices)
     candles = list(feed.candles)
 
@@ -91,8 +91,8 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
         markov=markov,
         mc=mc,
         smc=smc if smc else _null_smc(),
-        yes_price=market.yes_price,
-        no_price=market.no_price,
+        yes_price=market.yes_ask,
+        no_price=market.no_ask,
         window_open=window_open,
         window_end=window_end,
     )
@@ -103,7 +103,7 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
     if not converge:
         await send(
             f"🔴 <b>NO TRADE</b> — signals split\n"
-            f"Market: {market.question}\n"
+            f"Market: {market.title}\n"
             f"Markov: {markov.signal} | MC: {mc.signal} | SMC: {smc_sig}\n"
             f"Claude: {decision.direction} ({decision.confidence:.0%})\n"
             f"Reason: {decision.reasoning}"
@@ -113,7 +113,7 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
     if decision.direction == "NO_TRADE" or decision.confidence < MIN_CONFIDENCE:
         await send(
             f"🟡 <b>CLAUDE VETOED</b>\n"
-            f"Market: {market.question}\n"
+            f"Market: {market.title}\n"
             f"Quant: {quant_direction} | Claude: {decision.direction} ({decision.confidence:.0%})\n"
             f"Reason: {decision.reasoning}"
         )
@@ -127,18 +127,18 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
         return
 
     # ── Execute ───────────────────────────────────────────────────────────────
-    print(f"[Hermes] FIRE {decision.direction} on {market.question}")
+    print(f"[Hermes] FIRE {decision.direction} on {market.title}")
 
     if PAPER_TRADE:
         from hermes.paper_trader import record_trade, get_balance
         trade = record_trade(
-            market_question=market.question,
-            market_end=market.end_date_iso,
-            condition_id=market.condition_id,
+            market_title=market.title,
+            close_time=market.close_time,
+            ticker=market.ticker,
             direction=decision.direction,
             entry_btc_price=feed.last_price,
-            yes_price=market.yes_price,
-            no_price=market.no_price,
+            yes_ask=market.yes_ask,
+            no_ask=market.no_ask,
             confidence=decision.confidence,
             reasoning=decision.reasoning,
         )
@@ -147,14 +147,14 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
             bal   = get_balance()
             await send(
                 f"📋 <b>PAPER TRADE LOGGED</b>\n"
-                f"Market: {market.question}\n"
+                f"Market: {market.title}\n"
                 f"Direction: {decision.direction}  |  Odds: {price:.3f}\n"
                 f"Size: ${trade['size_usdc']:.2f} USDC  |  Balance: ${bal:.2f}\n"
                 f"Claude: {decision.confidence:.0%} — {decision.reasoning}"
             )
             send_trade_alert(
                 direction=decision.direction,
-                market=market.question,
+                market=market.title,
                 size_usdc=trade["size_usdc"],
                 price=price,
                 confidence=decision.confidence,
@@ -162,14 +162,14 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
                 balance=bal,
             )
         else:
-            await send(f"📋 <b>PAPER SKIP</b> — size too small\nMarket: {market.question}")
+            await send(f"📋 <b>PAPER SKIP</b> — size too small\nMarket: {market.title}")
     else:
-        from hermes.trading.polymarket_trader import place_market_order
-        result = place_market_order(market, decision.direction, decision.confidence, MAX_TRADE_USDC)
+        from hermes.trading.kalshi_trader import place_kalshi_order
+        result = await place_kalshi_order(market, decision.direction, decision.confidence, MAX_TRADE_USDC)
         if result.success:
             await send(
                 f"✅ <b>TRADE PLACED</b>\n"
-                f"Market: {market.question}\n"
+                f"Market: {market.title}\n"
                 f"Direction: {result.direction}  |  Price: {result.price:.3f}\n"
                 f"Size: ${result.amount_usdc:.2f} USDC  |  OrderID: {result.order_id}\n"
                 f"Claude: {decision.confidence:.0%} — {decision.reasoning}"
@@ -177,14 +177,13 @@ async def analyse_and_trade(feed: BinanceFeed, market: BTCMarket, window_open: d
         else:
             await send(
                 f"❌ <b>ORDER FAILED</b>\n"
-                f"Market: {market.question}\n"
+                f"Market: {market.title}\n"
                 f"Direction: {result.direction}  Error: {result.error}"
             )
         print(f"[Hermes] Order result: success={result.success} error={result.error}")
 
 
 async def price_status_updater(feed: BinanceFeed):
-    """Keep the API status endpoint current with the live BTC price."""
     while True:
         if feed.last_price:
             api_update_status(feed.last_price)
@@ -198,7 +197,6 @@ async def candle_refresher(feed: BinanceFeed):
 
 
 async def trade_resolver(feed: BinanceFeed):
-    """Periodically resolve completed paper trades using live BTC price."""
     if not PAPER_TRADE:
         return
     while True:
@@ -209,9 +207,9 @@ async def trade_resolver(feed: BinanceFeed):
             from hermes.paper_trader import resolve_pending, get_balance
             resolved = await resolve_pending(feed.last_price)
             for t in resolved:
-                icon = "✅" if t["result"] == "WIN" else "❌"
+                icon    = "✅" if t["result"] == "WIN" else "❌"
                 pnl_str = f"+${t['pnl']:.2f}" if t["pnl"] >= 0 else f"-${abs(t['pnl']):.2f}"
-                bal = get_balance()
+                bal     = get_balance()
                 print(
                     f"[Paper] {icon} RESOLVED {t['direction']} | "
                     f"{t['result']} | P&L {pnl_str} | balance=${bal:.2f}"
@@ -242,46 +240,40 @@ async def main_loop(feed: BinanceFeed):
 
     mode = "PAPER TRADING" if PAPER_TRADE else "LIVE TRADING"
     print(f"[Hermes] Scanner started — {mode} — polling every {SCAN_INTERVAL_SECONDS}s")
-    notify(f"🟢 <b>Hermes online [{mode}]</b> — scanning Polymarket for BTC Up/Down windows")
+    notify(f"🟢 <b>Hermes online [{mode}]</b> — scanning Kalshi KXBTC15M")
 
     while True:
         try:
-            markets = await get_active_btc_markets()
+            market = await get_current_btc_market()
+            ts     = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-            new = [m for m in markets if m.condition_id not in seen_markets]
-            print(f"[{ts} UTC] Polymarket scan: {len(markets)} BTC markets live, {len(new)} new")
+            if market is None:
+                print(f"[{ts} UTC] Kalshi: no active BTC 15m window right now")
+                await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+                continue
 
-            for market in markets:
-                if market.condition_id in seen_markets:
-                    continue
+            if market.ticker in seen_markets:
+                print(f"[{ts} UTC] Kalshi: {market.ticker} (already processed)")
+                await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+                continue
 
-                end_dt      = datetime.fromisoformat(market.end_date_iso.replace("Z", "+00:00"))
-                window_open = end_dt - timedelta(seconds=WINDOW_SECONDS)
-                now         = datetime.now(timezone.utc)
+            seen_markets.add(market.ticker)
+            window_open = datetime.fromisoformat(market.open_time.replace("Z",  "+00:00"))
+            window_end  = datetime.fromisoformat(market.close_time.replace("Z", "+00:00"))
+            mins_left   = int((window_end - datetime.now(timezone.utc)).total_seconds() // 60)
 
-                if now < window_open:
-                    # window hasn't opened yet — don't mark seen, catch it when it opens
-                    continue
+            print(f"[Hermes] Live window: {market.title} | {market.ticker} ({mins_left}m remaining)")
+            await send(f"🔍 Live window: <b>{market.title}</b> ({mins_left}m left) | floor=${market.floor_strike:,.2f}")
 
-                if now >= end_dt:
-                    # window already closed — mark seen and skip
-                    seen_markets.add(market.condition_id)
-                    continue
+            print(f"[Hermes] Collecting {ANALYSIS_DELAY_SECONDS}s of data…")
+            await asyncio.sleep(ANALYSIS_DELAY_SECONDS)
 
-                seen_markets.add(market.condition_id)
-                mins_left = int((end_dt - now).total_seconds() // 60)
-                print(f"[Hermes] Live window: {market.question} ({mins_left}m remaining)")
-                await send(f"🔍 Live window: <b>{market.question}</b> ({mins_left}m left)")
+            if not feed.ready():
+                print("[Hermes] Feed not ready, skip")
+                await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+                continue
 
-                print(f"[Hermes] Collecting {ANALYSIS_DELAY_SECONDS}s of data…")
-                await asyncio.sleep(ANALYSIS_DELAY_SECONDS)
-
-                if not feed.ready():
-                    print("[Hermes] Feed not ready, skip")
-                    continue
-
-                await analyse_and_trade(feed, market, window_open, end_dt)
+            await analyse_and_trade(feed, market, window_open, window_end)
 
         except Exception:
             print("[Hermes] Scanner error:")
@@ -292,7 +284,7 @@ async def main_loop(feed: BinanceFeed):
 
 async def run():
     feed = BinanceFeed()
-    await feed.preload()   # pre-fill price buffer from REST history — feed ready immediately
+    await feed.preload()
     await asyncio.gather(
         start_api(),
         feed.stream(),
