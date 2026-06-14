@@ -23,7 +23,7 @@ class TradeDecision:
     raw_response: str
 
 
-_SYSTEM_PROMPT = """You are Hermes, a quantitative trading brain for Polymarket BTC Up/Down markets.
+_SYSTEM_PROMPT = """You are Hermes, a quantitative trading brain for Kalshi BTC Up/Down markets.
 You receive four independent signal groups computed from live Binance microstructure data:
 1. Markov chain persistence (momentum signal)
 2. Monte Carlo path simulation (probabilistic forward projection)
@@ -60,7 +60,7 @@ def _build_user_message(
 This is the CURRENT active window. Your decision will be traded on this window only.
 
 Current BTC price: ${btc_price:,.2f}
-Polymarket YES (Up) price: {yes_price:.3f} | NO (Down) price: {no_price:.3f}
+Kalshi YES (Up) ask: {yes_price:.3f} | NO (Down) ask: {no_price:.3f}
 
 === MARKOV CHAIN ({markov.n_samples} samples) ===
 P(Bull→Bull): {markov.bull_persistence:.3f}  |  P(Bear→Bear): {markov.bear_persistence:.3f}

@@ -49,7 +49,7 @@ async def place_kalshi_order(
         "side":          side,
         "type":          "market",
         "dollar_amount": round(size, 2),
-        price_key:       round(price, 2),
+        price_key:       str(round(price, 2)),
     }
     body_str = json.dumps(body)
 
