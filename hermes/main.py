@@ -167,6 +167,20 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         from hermes.trading.kalshi_trader import place_kalshi_order
         result = await place_kalshi_order(market, decision.direction, decision.confidence, MAX_TRADE_USDC)
         if result.success:
+            from hermes.paper_trader import record_trade, get_balance
+            record_trade(
+                market_title=market.title,
+                close_time=market.close_time,
+                ticker=market.ticker,
+                direction=result.direction,
+                entry_btc_price=feed.last_price,
+                yes_ask=market.yes_ask,
+                no_ask=market.no_ask,
+                confidence=decision.confidence,
+                reasoning=decision.reasoning,
+                size_override=result.amount_usdc,
+            )
+            bal = get_balance()
             await send(
                 f"✅ <b>TRADE PLACED</b>\n"
                 f"Market: {market.title}\n"
@@ -207,8 +221,6 @@ async def candle_refresher(feed: BinanceFeed):
 
 
 async def trade_resolver(feed: BinanceFeed):
-    if not PAPER_TRADE:
-        return
     while True:
         await asyncio.sleep(RESOLVE_CHECK_SECONDS)
         if feed.last_price == 0.0:

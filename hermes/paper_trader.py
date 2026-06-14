@@ -64,11 +64,12 @@ def record_trade(
     no_ask: float,
     confidence: float,
     reasoning: str,
+    size_override: Optional[float] = None,
 ) -> Optional[dict]:
     ledger  = _load()
     balance = ledger["balance"]
     price   = yes_ask if direction == "BULL" else no_ask
-    size    = kelly_size(confidence, price, balance)
+    size    = size_override if size_override is not None else kelly_size(confidence, price, balance)
 
     if size < 0.05:
         print(f"[Paper] Size ${size:.2f} too small, skip")
