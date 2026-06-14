@@ -55,7 +55,7 @@ async def place_kalshi_order(
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{KALSHI_BASE}/portfolio/orders",
-                headers=kalshi_headers("POST", path, body_str),
+                headers=kalshi_headers("POST", path),
                 data=body_str,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
