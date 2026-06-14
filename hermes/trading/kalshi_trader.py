@@ -2,7 +2,6 @@
 Live order placement on Kalshi.
 Uses contract-count orders: count = floor(size / price_per_contract).
 """
-import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -43,24 +42,24 @@ async def place_kalshi_order(
             amount_usdc=size, error="size too small (< 1 contract)",
         )
 
-    path      = "/trade-api/v2/portfolio/orders"
-    price_key = "yes_price_dollars" if direction == "BULL" else "no_price_dollars"
-    body      = {
-        "ticker":   market.ticker,
-        "action":   "buy",
-        "side":     side,
-        "type":     "limit",
-        "count":    count,
-        price_key:  f"{price:.2f}",
+    # price in integer cents (1-99), e.g. 0.64 → 64
+    price_cents = round(price * 100)
+    price_key   = "yes_price" if direction == "BULL" else "no_price"
+    path        = "/trade-api/v2/portfolio/orders"
+    body        = {
+        "ticker":  market.ticker,
+        "action":  "buy",
+        "side":    side,
+        "count":   count,
+        price_key: price_cents,
     }
-    body_str = json.dumps(body)
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{KALSHI_BASE}/portfolio/orders",
                 headers=kalshi_headers("POST", path),
-                data=body_str,
+                json=body,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 data = await resp.json()
