@@ -174,6 +174,16 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
                 f"Size: ${result.amount_usdc:.2f} USDC  |  OrderID: {result.order_id}\n"
                 f"Claude: {decision.confidence:.0%} — {decision.reasoning}"
             )
+            send_trade_alert(
+                direction=result.direction,
+                market=market.title,
+                size_usdc=result.amount_usdc,
+                price=result.price,
+                confidence=decision.confidence,
+                reasoning=decision.reasoning,
+                live=True,
+                order_id=result.order_id or "",
+            )
         else:
             await send(
                 f"❌ <b>ORDER FAILED</b>\n"

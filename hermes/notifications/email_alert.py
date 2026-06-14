@@ -39,30 +39,32 @@ def send_trade_alert(
     price: float,
     confidence: float,
     reasoning: str,
-    balance: float,
+    balance: float = 0.0,
+    live: bool = False,
+    order_id: str = "",
 ) -> None:
-    arrow  = "▲" if direction == "BULL" else "▼"
-    shares = size_usdc / price if price > 0 else 0
+    arrow      = "▲" if direction == "BULL" else "▼"
+    shares     = size_usdc / price if price > 0 else 0
     win_payout = shares - size_usdc
+    label      = "LIVE Trade" if live else "Paper Trade"
 
-    subject = f"🔥 Hermes Paper Trade: {arrow} {direction} BTC"
-    body = f"""Hermes just logged a paper trade.
+    subject = f"🔥 Hermes {label}: {arrow} {direction} BTC"
+    body = f"""Hermes just placed a {'LIVE' if live else 'paper'} trade.
 
 Direction  : {direction} {arrow}
 Market     : {market}
-Odds       : {price:.3f}  ({price*100:.1f}¢ per share)
-Size       : ${size_usdc:.2f} USDC
+Odds       : {price:.3f}  ({price*100:.1f}¢ per contract)
+Size       : ${size_usdc:.2f} USDC  ({int(shares)} contracts)
 Confidence : {confidence:.0%}
-Balance    : ${balance:.2f}
+{"Order ID   : " + order_id if live else "Balance    : $" + f"{balance:.2f}"}
 
 Claude's reasoning:
   {reasoning}
 
 ─────────────────────────────────
-If this were a real trade:
-  Shares bought : {shares:.1f} shares at {price:.3f}
-  WIN payout    : ${shares:.2f}  (profit +${win_payout:.2f})
-  LOSS cost     : -${size_usdc:.2f}
+  Contracts  : {int(shares)} @ {price:.3f}
+  WIN payout : ${shares:.2f}  (profit +${win_payout:.2f})
+  LOSS cost  : -${size_usdc:.2f}
 ─────────────────────────────────
 """
     _send(subject, body)
