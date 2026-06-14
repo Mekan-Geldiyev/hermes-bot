@@ -1,6 +1,6 @@
 """
 Live order placement on Kalshi.
-Uses dollar-amount market orders (fractional trading enabled on KXBTC15M).
+Uses contract-count orders: count = floor(size / price_per_contract).
 """
 import json
 from dataclasses import dataclass
@@ -35,21 +35,23 @@ async def place_kalshi_order(
     size  = kelly_size(confidence, price, bal)
     size  = min(size, max_usdc)
 
-    if size < 0.05:
+    count = int(size / price) if price > 0 else 0
+
+    if count < 1:
         return OrderResult(
             success=False, direction=direction, price=price,
-            amount_usdc=size, error="size too small",
+            amount_usdc=size, error="size too small (< 1 contract)",
         )
 
-    path     = "/trade-api/v2/portfolio/orders"
+    path      = "/trade-api/v2/portfolio/orders"
     price_key = "yes_price_dollars" if direction == "BULL" else "no_price_dollars"
-    body     = {
-        "ticker":        market.ticker,
-        "action":        "buy",
-        "side":          side,
-        "type":          "market",
-        "dollar_amount": round(size, 2),
-        price_key:       f"{price:.2f}",
+    body      = {
+        "ticker":   market.ticker,
+        "action":   "buy",
+        "side":     side,
+        "type":     "limit",
+        "count":    count,
+        price_key:  f"{price:.2f}",
     }
     body_str = json.dumps(body)
 
