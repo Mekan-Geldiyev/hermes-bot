@@ -34,12 +34,12 @@ class KalshiMarket:
     close_time:   str     # ISO
 
 
-def kalshi_headers(method: str, path: str) -> dict:
+def kalshi_headers(method: str, path: str, body: str = "") -> dict:
     with open(KALSHI_PRIVATE_KEY_PATH) as f:
         privkey = serialization.load_pem_private_key(f.read().encode(), password=None)
     ts  = str(int(time.time() * 1000))
     sig = base64.b64encode(
-        privkey.sign((ts + method + path).encode(), padding.PKCS1v15(), hashes.SHA256())
+        privkey.sign((ts + method + path + body).encode(), padding.PKCS1v15(), hashes.SHA256())
     ).decode()
     return {
         "accept":                  "application/json",

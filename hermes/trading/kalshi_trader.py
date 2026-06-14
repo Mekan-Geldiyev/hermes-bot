@@ -41,21 +41,22 @@ async def place_kalshi_order(
             amount_usdc=size, error="size too small",
         )
 
-    path = "/trade-api/v2/portfolio/orders"
-    body = {
+    path     = "/trade-api/v2/portfolio/orders"
+    body     = {
         "ticker":        market.ticker,
         "action":        "buy",
         "side":          side,
         "type":          "market",
         "dollar_amount": round(size, 2),
     }
+    body_str = json.dumps(body)
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{KALSHI_BASE}/portfolio/orders",
-                headers=kalshi_headers("POST", path),
-                data=json.dumps(body),
+                headers=kalshi_headers("POST", path, body_str),
+                data=body_str,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 data = await resp.json()
