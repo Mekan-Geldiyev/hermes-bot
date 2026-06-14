@@ -42,12 +42,14 @@ async def place_kalshi_order(
         )
 
     path     = "/trade-api/v2/portfolio/orders"
+    price_key = "yes_price_dollars" if direction == "BULL" else "no_price_dollars"
     body     = {
         "ticker":        market.ticker,
         "action":        "buy",
         "side":          side,
         "type":          "market",
         "dollar_amount": round(size, 2),
+        price_key:       round(price, 2),
     }
     body_str = json.dumps(body)
 
