@@ -21,6 +21,7 @@ from hermes.config import (
     MIN_CONFIDENCE,
     MAX_TRADE_USDC,
     PAPER_TRADE,
+    HIGH_CONFIDENCE_SKIP_THRESHOLD,
 )
 from hermes.feeds.binance_feed import BinanceFeed
 from hermes.feeds.kalshi_feed import get_current_btc_market, KalshiMarket
@@ -123,6 +124,32 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         await send(
             f"🟡 <b>DIRECTION MISMATCH</b> — quant={quant_direction} Claude={decision.direction}\n"
             f"Skipping."
+        )
+        return
+
+    if decision.confidence >= HIGH_CONFIDENCE_SKIP_THRESHOLD:
+        from hermes.high_confidence_log import record_skip
+        record_skip(
+            market_title=market.title,
+            ticker=market.ticker,
+            close_time=market.close_time,
+            direction=decision.direction,
+            entry_btc_price=feed.last_price,
+            yes_price=market.yes_ask,
+            no_price=market.no_ask,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+            markov_signal=markov.signal,
+            markov_persistence=markov.persistence,
+            mc_signal=mc.signal,
+            mc_bull_prob=mc.bull_prob,
+            smc_signal=smc_sig,
+        )
+        await send(
+            f"🟣 <b>HIGH-CONFIDENCE SKIP</b> — conf={decision.confidence:.0%} (>= {HIGH_CONFIDENCE_SKIP_THRESHOLD:.0%} threshold)\n"
+            f"Market: {market.title}\n"
+            f"Direction: {decision.direction}  |  Logged for tracking, not traded.\n"
+            f"Reason: {decision.reasoning}"
         )
         return
 
@@ -251,6 +278,15 @@ async def trade_resolver(feed: BinanceFeed):
                     pnl=t["pnl"],
                     balance=bal,
                     market=t["market"],
+                )
+
+            from hermes.high_confidence_log import resolve_skips
+            skip_resolved = await resolve_skips(feed.last_price)
+            for s in skip_resolved:
+                icon = "✅" if s["would_have_won"] else "❌"
+                print(
+                    f"[HighConfSkip] {icon} {s['direction']} conf={s['confidence']:.2f} "
+                    f"would_have_won={s['would_have_won']} | {s['market']}"
                 )
         except Exception:
             traceback.print_exc()

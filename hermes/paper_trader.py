@@ -42,11 +42,7 @@ def get_balance() -> float:
 
 # ─── sizing ───────────────────────────────────────────────────────────────────
 
-SIZING_CONFIDENCE_CAP = 0.65  # confidence above this is poorly calibrated for sizing — see trade log audit
-
-
 def kelly_size(confidence: float, price: float, balance: float) -> float:
-    confidence = min(confidence, SIZING_CONFIDENCE_CAP)
     if price <= 0.0 or price >= 1.0 or confidence <= price:
         return 0.0
     b = (1.0 - price) / price

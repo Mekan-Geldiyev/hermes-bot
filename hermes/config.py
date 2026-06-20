@@ -13,6 +13,12 @@ KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 MAX_TRADE_USDC           = float(os.getenv("MAX_TRADE_USDC", "50"))
 MIN_CONFIDENCE           = float(os.getenv("MIN_CONFIDENCE", "0.60"))
 
+# Trade log audit (32 trades) showed confidence >=0.70 calls had a 28.6% actual
+# win rate vs 64.0% for 0.60-0.65 — extreme persistence readings mark trend
+# exhaustion more often than continuation on this timeframe. Skip and log
+# instead of trading, so we can keep studying whether to fade them later.
+HIGH_CONFIDENCE_SKIP_THRESHOLD = float(os.getenv("HIGH_CONFIDENCE_SKIP_THRESHOLD", "0.70"))
+
 # Email alerts
 EMAIL_FROM         = os.getenv("EMAIL_FROM", "")
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
