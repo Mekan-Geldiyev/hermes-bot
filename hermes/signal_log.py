@@ -6,6 +6,8 @@ for building a dataset to evaluate the confidence-calibration hypothesis from
 the 32-trade audit (extreme confidence correlates with trend exhaustion, not
 continuation, on this timeframe).
 
+- low_signal_log.json        : quant signals never converged — Claude was
+                                never called (lightest — just the 3 raw votes)
 - low_confidence_skips.json  : confidence < MIN_TRADE_CONFIDENCE (lightweight)
 - high_confidence_log.json   : confidence > MAX_TRADE_CONFIDENCE (rich — full
                                 signal breakdown + volatility context, to test
@@ -16,8 +18,9 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-LOW_LOG_PATH  = os.path.join(os.path.dirname(__file__), "low_confidence_skips.json")
-HIGH_LOG_PATH = os.path.join(os.path.dirname(__file__), "high_confidence_log.json")
+NO_CONVERGENCE_LOG_PATH = os.path.join(os.path.dirname(__file__), "low_signal_log.json")
+LOW_LOG_PATH             = os.path.join(os.path.dirname(__file__), "low_confidence_skips.json")
+HIGH_LOG_PATH            = os.path.join(os.path.dirname(__file__), "high_confidence_log.json")
 
 
 def _load(path: str) -> list:
@@ -30,6 +33,29 @@ def _load(path: str) -> list:
 def _save(path: str, entries: list) -> None:
     with open(path, "w") as f:
         json.dump(entries, f, indent=2)
+
+
+# ─── no-convergence (lightest — Claude was never called) ───────────────────────
+
+def record_no_convergence(
+    ticker: str,
+    market_title: str,
+    markov_signal: Optional[str],
+    mc_signal: Optional[str],
+    smc_signal: Optional[str],
+) -> None:
+    entries = _load(NO_CONVERGENCE_LOG_PATH)
+    entries.append({
+        "id":            datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
+        "timestamp":     datetime.now(timezone.utc).isoformat(),
+        "ticker":        ticker,
+        "market":        market_title,
+        "markov_signal": markov_signal,
+        "mc_signal":     mc_signal,
+        "smc_signal":    smc_signal,
+        "note":          "skipped: no_convergence",
+    })
+    _save(NO_CONVERGENCE_LOG_PATH, entries)
 
 
 # ─── low-confidence (lightweight) ──────────────────────────────────────────────

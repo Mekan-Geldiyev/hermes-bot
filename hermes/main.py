@@ -114,6 +114,25 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         f"Converge={converge}/{quant_direction}"
     )
 
+    # ── Gate: quant convergence required before Claude is ever called ──────────
+    # No trade can fire without convergence, so querying Claude on a non-
+    # converged cycle is a wasted API call. Check this first.
+    if not converge:
+        from hermes.signal_log import record_no_convergence
+        record_no_convergence(
+            ticker=market.ticker,
+            market_title=market.title,
+            markov_signal=markov.signal,
+            mc_signal=mc.signal,
+            smc_signal=smc_sig,
+        )
+        await send(
+            f"🔴 <b>NO TRADE</b> — signals split\n"
+            f"Market: {market.title}\n"
+            f"Markov: {markov.signal} | MC: {mc.signal} | SMC: {smc_sig}"
+        )
+        return
+
     # ── Claude synthesis ──────────────────────────────────────────────────────
     decision = query_claude(
         btc_price=feed.last_price,
@@ -127,17 +146,6 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
     )
 
     print(f"[Claude] dir={decision.direction} conf={decision.confidence:.2f} | {decision.reasoning}")
-
-    # ── Gate: quant must agree with Claude ────────────────────────────────────
-    if not converge:
-        await send(
-            f"🔴 <b>NO TRADE</b> — signals split\n"
-            f"Market: {market.title}\n"
-            f"Markov: {markov.signal} | MC: {mc.signal} | SMC: {smc_sig}\n"
-            f"Claude: {decision.direction} ({decision.confidence:.0%})\n"
-            f"Reason: {decision.reasoning}"
-        )
-        return
 
     if decision.direction == "NO_TRADE":
         await send(
