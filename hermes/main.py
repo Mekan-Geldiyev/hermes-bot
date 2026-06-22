@@ -13,15 +13,17 @@ Lifecycle per 15-minute Kalshi window:
 import asyncio
 import traceback
 from datetime import datetime, timezone
+from typing import Optional
 
 from hermes.config import (
     MARKOV_PERSISTENCE_THRESHOLD,
     MONTE_CARLO_PATHS,
     MONTE_CARLO_STEPS,
-    MIN_CONFIDENCE,
+    MIN_TRADE_CONFIDENCE,
+    MAX_TRADE_CONFIDENCE,
     MAX_TRADE_USDC,
     PAPER_TRADE,
-    HIGH_CONFIDENCE_SKIP_THRESHOLD,
+    TICK_INTERVAL_SECONDS,
 )
 from hermes.feeds.binance_feed import BinanceFeed
 from hermes.feeds.kalshi_feed import get_current_btc_market, KalshiMarket
@@ -57,6 +59,32 @@ def _signals_converge(markov_signal, mc_signal, smc_signal) -> tuple[bool, str]:
 def _null_smc():
     from hermes.analysis.smc import SMCResult
     return SMCResult(bos=None, liquidity_sweep=None, fvg=None, signal=None, patterns_found=0)
+
+
+def _pct_change_over(prices: list[float], minutes: float) -> Optional[float]:
+    """% price change over the prior N minutes, using the 5s-bar price buffer."""
+    bars = int((minutes * 60) / TICK_INTERVAL_SECONDS)
+    if bars <= 0 or len(prices) <= bars:
+        return None
+    past = prices[-1 - bars]
+    if past == 0:
+        return None
+    return (prices[-1] - past) / past * 100
+
+
+def _bars_since_state_flip(prices: list[float]) -> Optional[int]:
+    """How many bars the Markov buffer has held its current BULL/BEAR state."""
+    from hermes.analysis.markov import classify_returns
+    states = classify_returns(prices)
+    if len(states) < 2:
+        return None
+    last = states[-1]
+    run = 0
+    for s in reversed(states):
+        if s != last:
+            break
+        run += 1
+    return run
 
 
 async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open: datetime, window_end: datetime):
@@ -111,7 +139,7 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         )
         return
 
-    if decision.direction == "NO_TRADE" or decision.confidence < MIN_CONFIDENCE:
+    if decision.direction == "NO_TRADE":
         await send(
             f"🟡 <b>CLAUDE VETOED</b>\n"
             f"Market: {market.title}\n"
@@ -127,9 +155,35 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         )
         return
 
-    if decision.confidence >= HIGH_CONFIDENCE_SKIP_THRESHOLD:
-        from hermes.high_confidence_log import record_skip
-        record_skip(
+    # ── Hard confidence band gate ───────────────────────────────────────────────
+    # Audit: confidence 0.60-0.65 had a 64% win rate (+$31.76 net); confidence
+    # >=0.70 had 28.6% (-$21.12 net). Only trade inside the validated band;
+    # everything outside it is logged purely for observation, never traded,
+    # never sized.
+    if decision.confidence < MIN_TRADE_CONFIDENCE:
+        from hermes.signal_log import record_low_confidence_skip
+        record_low_confidence_skip(
+            market_title=market.title,
+            ticker=market.ticker,
+            close_time=market.close_time,
+            direction=decision.direction,
+            entry_btc_price=feed.last_price,
+            yes_price=market.yes_ask,
+            no_price=market.no_ask,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+        )
+        await send(
+            f"⚪ <b>LOW-CONFIDENCE SKIP</b> — conf={decision.confidence:.0%} (< {MIN_TRADE_CONFIDENCE:.0%} floor)\n"
+            f"Market: {market.title}\n"
+            f"Direction: {decision.direction}  |  Logged for tracking, not traded."
+        )
+        return
+
+    if decision.confidence > MAX_TRADE_CONFIDENCE:
+        from hermes.signal_log import record_high_confidence_signal
+        flip_bars = _bars_since_state_flip(prices)
+        record_high_confidence_signal(
             market_title=market.title,
             ticker=market.ticker,
             close_time=market.close_time,
@@ -140,13 +194,28 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
             confidence=decision.confidence,
             reasoning=decision.reasoning,
             markov_signal=markov.signal,
+            markov_current_state=markov.current_state,
             markov_persistence=markov.persistence,
+            markov_bull_persistence=markov.bull_persistence,
+            markov_bear_persistence=markov.bear_persistence,
+            markov_n_samples=markov.n_samples,
             mc_signal=mc.signal,
             mc_bull_prob=mc.bull_prob,
+            mc_bear_prob=mc.bear_prob,
+            mc_n_paths=mc.n_paths,
+            mc_n_steps=mc.n_steps,
+            smc_bos=smc.bos if smc else None,
+            smc_liquidity_sweep=smc.liquidity_sweep if smc else None,
+            smc_fvg=smc.fvg if smc else None,
             smc_signal=smc_sig,
+            smc_patterns_found=smc.patterns_found if smc else 0,
+            pct_change_5m=_pct_change_over(prices, 5),
+            pct_change_15m=_pct_change_over(prices, 15),
+            bars_since_state_flip=flip_bars,
+            seconds_since_state_flip=flip_bars * TICK_INTERVAL_SECONDS if flip_bars is not None else None,
         )
         await send(
-            f"🟣 <b>HIGH-CONFIDENCE SKIP</b> — conf={decision.confidence:.0%} (>= {HIGH_CONFIDENCE_SKIP_THRESHOLD:.0%} threshold)\n"
+            f"🟣 <b>HIGH-CONFIDENCE LOG</b> — conf={decision.confidence:.0%} (> {MAX_TRADE_CONFIDENCE:.0%} ceiling)\n"
             f"Market: {market.title}\n"
             f"Direction: {decision.direction}  |  Logged for tracking, not traded.\n"
             f"Reason: {decision.reasoning}"
@@ -280,12 +349,20 @@ async def trade_resolver(feed: BinanceFeed):
                     market=t["market"],
                 )
 
-            from hermes.high_confidence_log import resolve_skips
-            skip_resolved = await resolve_skips(feed.last_price)
-            for s in skip_resolved:
+            from hermes.signal_log import resolve_low_confidence_skips, resolve_high_confidence_log
+            low_resolved = await resolve_low_confidence_skips(feed.last_price)
+            for s in low_resolved:
                 icon = "✅" if s["would_have_won"] else "❌"
                 print(
-                    f"[HighConfSkip] {icon} {s['direction']} conf={s['confidence']:.2f} "
+                    f"[LowConfSkip] {icon} {s['direction']} conf={s['confidence']:.2f} "
+                    f"would_have_won={s['would_have_won']} | {s['market']}"
+                )
+
+            high_resolved = await resolve_high_confidence_log(feed.last_price)
+            for s in high_resolved:
+                icon = "✅" if s["would_have_won"] else "❌"
+                print(
+                    f"[HighConfLog] {icon} {s['direction']} conf={s['confidence']:.2f} "
                     f"would_have_won={s['would_have_won']} | {s['market']}"
                 )
         except Exception:
