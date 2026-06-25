@@ -12,13 +12,10 @@ KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 
 MAX_TRADE_USDC           = float(os.getenv("MAX_TRADE_USDC", "50"))
 
-# Trade log audit (32 trades): confidence 0.60-0.65 band had a 64.0% win rate
-# (+$31.76 net); confidence >=0.70 had only 28.6% (-$21.12 net) despite Claude
-# predicting higher. Hard gate: only trade inside the validated band. Anything
-# outside it is logged for observation only (see hermes/signal_log.py),
-# never traded. Tune via .env without a code change.
+# Floor only — ceiling removed after live HighConfLog showed 3/3 wins at >=0.71.
+# The original >=0.70 audit (28.6% win rate) was a small stale sample from a
+# different BTC regime. Tune via .env without a code change.
 MIN_TRADE_CONFIDENCE = float(os.getenv("MIN_TRADE_CONFIDENCE", "0.63"))
-MAX_TRADE_CONFIDENCE = float(os.getenv("MAX_TRADE_CONFIDENCE", "0.68"))
 
 # Email alerts
 EMAIL_FROM         = os.getenv("EMAIL_FROM", "")

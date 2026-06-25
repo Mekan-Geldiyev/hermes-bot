@@ -33,9 +33,12 @@ Your job is to synthesise these signals and output a single JSON trading decisio
 The market pays $1 if BTC closes higher (BULL) or lower (BEAR) than open in a 15-minute window.
 
 Strict rules:
-- Only recommend BULL or BEAR when AT LEAST 3 of the 4 signal categories agree.
-  The 4 categories are: Markov, MonteCarlo, SMC-structural (BOS+sweep), SMC-imbalance (FVG).
-- Output NO_TRADE if signals conflict or evidence is weak.
+- Recommend BULL or BEAR only when BOTH of these hold:
+  1. Markov AND MonteCarlo agree on the same direction.
+  2. At least ONE of the following is also true:
+     (a) At least one SMC signal (BOS, Liquidity Sweep, or FVG) confirms that direction, OR
+     (b) Markov persistence > 0.58 AND MC probability > 0.57 for that direction.
+- Output NO_TRADE if Markov and MC disagree, or neither condition (a) nor (b) is met.
 - Confidence must reflect genuine edge, not optimism. 0.5 = coin flip.
 - Be terse. Reasoning ≤ 2 sentences.
 

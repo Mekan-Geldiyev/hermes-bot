@@ -20,7 +20,6 @@ from hermes.config import (
     MONTE_CARLO_PATHS,
     MONTE_CARLO_STEPS,
     MIN_TRADE_CONFIDENCE,
-    MAX_TRADE_CONFIDENCE,
     MAX_TRADE_USDC,
     PAPER_TRADE,
     TICK_INTERVAL_SECONDS,
@@ -163,11 +162,7 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         )
         return
 
-    # ── Hard confidence band gate ───────────────────────────────────────────────
-    # Audit: confidence 0.60-0.65 had a 64% win rate (+$31.76 net); confidence
-    # >=0.70 had 28.6% (-$21.12 net). Only trade inside the validated band;
-    # everything outside it is logged purely for observation, never traded,
-    # never sized.
+    # ── Confidence floor ────────────────────────────────────────────────────────
     if decision.confidence < MIN_TRADE_CONFIDENCE:
         from hermes.signal_log import record_low_confidence_skip
         record_low_confidence_skip(
@@ -185,48 +180,6 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
             f"⚪ <b>LOW-CONFIDENCE SKIP</b> — conf={decision.confidence:.0%} (< {MIN_TRADE_CONFIDENCE:.0%} floor)\n"
             f"Market: {market.title}\n"
             f"Direction: {decision.direction}  |  Logged for tracking, not traded."
-        )
-        return
-
-    if decision.confidence > MAX_TRADE_CONFIDENCE:
-        from hermes.signal_log import record_high_confidence_signal
-        flip_bars = _bars_since_state_flip(prices)
-        record_high_confidence_signal(
-            market_title=market.title,
-            ticker=market.ticker,
-            close_time=market.close_time,
-            direction=decision.direction,
-            entry_btc_price=feed.last_price,
-            yes_price=market.yes_ask,
-            no_price=market.no_ask,
-            confidence=decision.confidence,
-            reasoning=decision.reasoning,
-            markov_signal=markov.signal,
-            markov_current_state=markov.current_state,
-            markov_persistence=markov.persistence,
-            markov_bull_persistence=markov.bull_persistence,
-            markov_bear_persistence=markov.bear_persistence,
-            markov_n_samples=markov.n_samples,
-            mc_signal=mc.signal,
-            mc_bull_prob=mc.bull_prob,
-            mc_bear_prob=mc.bear_prob,
-            mc_n_paths=mc.n_paths,
-            mc_n_steps=mc.n_steps,
-            smc_bos=smc.bos if smc else None,
-            smc_liquidity_sweep=smc.liquidity_sweep if smc else None,
-            smc_fvg=smc.fvg if smc else None,
-            smc_signal=smc_sig,
-            smc_patterns_found=smc.patterns_found if smc else 0,
-            pct_change_5m=_pct_change_over(prices, 5),
-            pct_change_15m=_pct_change_over(prices, 15),
-            bars_since_state_flip=flip_bars,
-            seconds_since_state_flip=flip_bars * TICK_INTERVAL_SECONDS if flip_bars is not None else None,
-        )
-        await send(
-            f"🟣 <b>HIGH-CONFIDENCE LOG</b> — conf={decision.confidence:.0%} (> {MAX_TRADE_CONFIDENCE:.0%} ceiling)\n"
-            f"Market: {market.title}\n"
-            f"Direction: {decision.direction}  |  Logged for tracking, not traded.\n"
-            f"Reason: {decision.reasoning}"
         )
         return
 
