@@ -1,6 +1,10 @@
 """
-Live order placement on Kalshi.
+Live order placement on Kalshi (V2 events/orders endpoint).
 Uses contract-count orders: count = floor(size / price_per_contract).
+
+Side convention (V2 API quotes everything in YES terms):
+  BULL → side="bid"  (buying YES at yes_ask)
+  BEAR → side="ask"  (selling YES at 1-no_ask, equivalent to buying NO at no_ask)
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -28,36 +32,42 @@ async def place_kalshi_order(
 ) -> OrderResult:
     from hermes.paper_trader import kelly_size, get_balance
 
-    side  = "yes" if direction == "BULL" else "no"
-    price = market.yes_ask if direction == "BULL" else market.no_ask
-    bal   = get_balance()
-    size  = kelly_size(confidence, price, bal)
-    size  = min(size, max_usdc)
+    # cost_price = what we actually pay per contract (for sizing)
+    # yes_price  = the YES-side price sent to the API (V2 quotes everything in YES)
+    if direction == "BULL":
+        side        = "bid"
+        cost_price  = market.yes_ask
+        yes_price   = market.yes_ask
+    else:
+        side        = "ask"
+        cost_price  = market.no_ask
+        yes_price   = round(1.0 - market.no_ask, 6)
 
-    count = int(size / price) if price > 0 else 0
+    bal   = get_balance()
+    size  = kelly_size(confidence, cost_price, bal)
+    size  = min(size, max_usdc)
+    count = int(size / cost_price) if cost_price > 0 else 0
 
     if count < 1:
         return OrderResult(
-            success=False, direction=direction, price=price,
+            success=False, direction=direction, price=cost_price,
             amount_usdc=size, error="size too small (< 1 contract)",
         )
 
-    # price in integer cents (1-99), e.g. 0.64 → 64
-    price_cents = round(price * 100)
-    price_key   = "yes_price" if direction == "BULL" else "no_price"
-    path        = "/trade-api/v2/portfolio/orders"
-    body        = {
-        "ticker":  market.ticker,
-        "action":  "buy",
-        "side":    side,
-        "count":   count,
-        price_key: price_cents,
+    path = "/trade-api/v2/portfolio/events/orders"
+    body = {
+        "ticker":                     market.ticker,
+        "side":                       side,
+        "count":                      f"{count}.00",
+        "price":                      f"{yes_price:.4f}",
+        "time_in_force":              "fill_or_kill",
+        "self_trade_prevention_type": "taker_at_cross",
     }
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{KALSHI_BASE}/portfolio/orders",
+                f"{KALSHI_BASE}/portfolio/events/orders",
                 headers=kalshi_headers("POST", path),
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=10),
@@ -65,20 +75,19 @@ async def place_kalshi_order(
                 data = await resp.json()
 
         if resp.status in (200, 201):
-            order = data.get("order", {})
             return OrderResult(
                 success=True,
                 direction=direction,
-                price=price,
+                price=cost_price,
                 amount_usdc=size,
-                order_id=order.get("order_id", ""),
+                order_id=data.get("order_id", ""),
             )
         return OrderResult(
-            success=False, direction=direction, price=price,
+            success=False, direction=direction, price=cost_price,
             amount_usdc=size, error=str(data),
         )
     except Exception as e:
         return OrderResult(
-            success=False, direction=direction, price=price,
+            success=False, direction=direction, price=cost_price,
             amount_usdc=0, error=str(e),
         )
