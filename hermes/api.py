@@ -9,6 +9,7 @@ Endpoints:
 Runs on port 8080 (configurable via API_PORT env var).
 CORS is open so the Next.js frontend can reach it from any origin.
 """
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -18,6 +19,15 @@ from aiohttp import web
 logging.getLogger("aiohttp.server").setLevel(logging.CRITICAL)
 
 from hermes.paper_trader import _load as load_ledger
+from hermes.signal_log import LOW_LOG_PATH, HIGH_LOG_PATH
+
+
+def _load_json(path: str) -> list:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 _status: dict = {
     "running": True,
@@ -64,6 +74,14 @@ async def handle_status(request: web.Request) -> web.Response:
     return web.json_response(_status)
 
 
+async def handle_skips(request: web.Request) -> web.Response:
+    return web.json_response(_load_json(LOW_LOG_PATH))
+
+
+async def handle_highconf(request: web.Request) -> web.Response:
+    return web.json_response(_load_json(HIGH_LOG_PATH))
+
+
 async def handle_logs(request: web.Request) -> web.Response:
     n = min(int(request.query.get("n", 150)), 500)
     try:
@@ -101,9 +119,11 @@ async def cors(request: web.Request, handler):
 
 async def start() -> None:
     app = web.Application(middlewares=[cors])
-    app.router.add_get("/trades", handle_trades)
-    app.router.add_get("/status", handle_status)
-    app.router.add_get("/logs",   handle_logs)
+    app.router.add_get("/trades",   handle_trades)
+    app.router.add_get("/status",   handle_status)
+    app.router.add_get("/logs",     handle_logs)
+    app.router.add_get("/skips",    handle_skips)
+    app.router.add_get("/highconf", handle_highconf)
 
     runner = web.AppRunner(app, access_log=None)  # silence the BadHttpMessage spam
     await runner.setup()
