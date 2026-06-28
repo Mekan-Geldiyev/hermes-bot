@@ -60,7 +60,7 @@ async def place_kalshi_order(
         "side":                       side,
         "count":                      f"{count}.00",
         "price":                      f"{yes_price:.4f}",
-        "time_in_force":              "fill_or_kill",
+        "time_in_force":              "immediate_or_cancel",
         "self_trade_prevention_type": "taker_at_cross",
     }
 

@@ -3,6 +3,7 @@ Claude Opus 4 as the synthesis brain.
 Receives all quantitative signals, returns a structured trading decision.
 """
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -106,8 +107,18 @@ def query_claude(
 
     raw = message.content[0].text.strip()
 
+    # Strip markdown code fences if Claude wrapped the JSON
+    clean = raw
+    if clean.startswith("```"):
+        clean = re.sub(r"^```[a-z]*\n?", "", clean).rstrip("`").strip()
+
+    # Fall back to extracting the first JSON object if there's surrounding text
+    if not clean.startswith("{"):
+        m = re.search(r"\{[^{}]*\}", clean, re.DOTALL)
+        clean = m.group() if m else clean
+
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(clean)
         return TradeDecision(
             direction=parsed.get("direction", "NO_TRADE"),
             confidence=float(parsed.get("confidence", 0.0)),
