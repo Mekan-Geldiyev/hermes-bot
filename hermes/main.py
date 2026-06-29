@@ -21,6 +21,7 @@ from hermes.config import (
     MONTE_CARLO_STEPS,
     MIN_TRADE_CONFIDENCE,
     MAX_TRADE_USDC,
+    MACRO_VETO_PCT,
     PAPER_TRADE,
     TICK_INTERVAL_SECONDS,
 )
@@ -29,6 +30,7 @@ from hermes.feeds.kalshi_feed import get_current_btc_market, KalshiMarket
 from hermes.analysis.markov import compute_markov
 from hermes.analysis.monte_carlo import run_monte_carlo
 from hermes.analysis.smc import compute_smc
+from hermes.analysis.macro import get_macro_trend
 from hermes.brain.claude_agent import query_claude
 from hermes.notifications.telegram_bot import notify, send
 from hermes.notifications.email_alert import send_trade_alert, send_resolve_alert
@@ -132,12 +134,20 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         )
         return
 
+    # ── Macro trend (12h BTC direction) ──────────────────────────────────────
+    macro = await get_macro_trend()
+    print(
+        f"[Macro] 12h change={macro.change_pct:+.2f}% trend={macro.trend} "
+        f"(${macro.close_12h_ago:,.0f} → ${macro.close_now:,.0f})"
+    )
+
     # ── Claude synthesis ──────────────────────────────────────────────────────
     decision = query_claude(
         btc_price=feed.last_price,
         markov=markov,
         mc=mc,
         smc=smc if smc else _null_smc(),
+        macro=macro,
         yes_price=market.yes_ask,
         no_price=market.no_ask,
         window_open=window_open,
@@ -159,6 +169,24 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         await send(
             f"🟡 <b>DIRECTION MISMATCH</b> — quant={quant_direction} Claude={decision.direction}\n"
             f"Skipping."
+        )
+        return
+
+    # ── Macro hard veto ───────────────────────────────────────────────────────
+    macro_contradiction = (
+        (decision.direction == "BEAR" and macro.change_pct >  MACRO_VETO_PCT) or
+        (decision.direction == "BULL" and macro.change_pct < -MACRO_VETO_PCT)
+    )
+    if macro_contradiction:
+        print(
+            f"[Macro] VETO {decision.direction} — 12h BTC {macro.change_pct:+.2f}% "
+            f"opposes signal (threshold ±{MACRO_VETO_PCT}%)"
+        )
+        await send(
+            f"🚫 <b>MACRO VETO</b> — {decision.direction} blocked\n"
+            f"Market: {market.title}\n"
+            f"12h BTC: {macro.change_pct:+.2f}% ({macro.trend}) contradicts {decision.direction} signal.\n"
+            f"Claude conf was {decision.confidence:.0%} — overridden by regime filter."
         )
         return
 

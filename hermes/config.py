@@ -27,6 +27,9 @@ PAPER_TRADE              = os.getenv("PAPER_TRADE", "true").lower() == "true"
 ACCOUNT_SIZE_USDC        = float(os.getenv("ACCOUNT_SIZE_USDC", "20"))
 MAX_POSITION_PCT         = float(os.getenv("MAX_POSITION_PCT", "0.25"))  # max 25% per trade
 
+# Macro veto — hard-block trades when 12h BTC move opposes the signal by this % or more
+MACRO_VETO_PCT = float(os.getenv("MACRO_VETO_PCT", "0.8"))
+
 # Analysis thresholds
 MARKOV_PERSISTENCE_THRESHOLD = float(os.getenv("MARKOV_THRESHOLD", "0.55"))
 MONTE_CARLO_PATHS            = 500

@@ -14,6 +14,7 @@ from hermes.config import ANTHROPIC_API_KEY
 from hermes.analysis.markov import MarkovResult
 from hermes.analysis.monte_carlo import MCResult
 from hermes.analysis.smc import SMCResult
+from hermes.analysis.macro import MacroResult
 
 
 @dataclass
@@ -25,10 +26,11 @@ class TradeDecision:
 
 
 _SYSTEM_PROMPT = """You are Hermes, a quantitative trading brain for Kalshi BTC Up/Down markets.
-You receive four independent signal groups computed from live Binance microstructure data:
+You receive signal groups computed from live Binance microstructure data:
 1. Markov chain persistence (momentum signal)
 2. Monte Carlo path simulation (probabilistic forward projection)
 3. Smart Money Concepts: BOS, Liquidity Sweep, FVG (structural/institutional signals)
+4. Macro trend: 12-hour BTC price change (regime context)
 
 Your job is to synthesise these signals and output a single JSON trading decision.
 The market pays $1 if BTC closes higher (BULL) or lower (BEAR) than open in a 15-minute window.
@@ -40,6 +42,8 @@ Strict rules:
      (a) At least one SMC signal (BOS, Liquidity Sweep, or FVG) confirms that direction, OR
      (b) Markov persistence > 0.58 AND MC probability > 0.57 for that direction.
 - Output NO_TRADE if Markov and MC disagree, or neither condition (a) nor (b) is met.
+- Macro context: a 12h move strongly opposing your direction (e.g. +1.5% when you want BEAR)
+  is a significant red flag. Lower your confidence or output NO_TRADE if macro contradicts.
 - Confidence must reflect genuine edge, not optimism. 0.5 = coin flip.
 - Be terse. Reasoning ≤ 2 sentences.
 
@@ -52,19 +56,29 @@ def _build_user_message(
     markov: MarkovResult,
     mc: MCResult,
     smc: SMCResult,
+    macro: MacroResult,
     yes_price: float,
     no_price: float,
     window_open: datetime,
     window_end: datetime,
 ) -> str:
     now = datetime.now(window_end.tzinfo)
-    mins_elapsed  = int((now - window_open).total_seconds() // 60)
+    mins_elapsed   = int((now - window_open).total_seconds() // 60)
     mins_remaining = int((window_end - now).total_seconds() // 60)
+
+    macro_line = (
+        f"12h BTC change: {macro.change_pct:+.2f}% → {macro.trend}  "
+        f"(${macro.close_12h_ago:,.0f} → ${macro.close_now:,.0f})"
+    )
+
     return f"""LIVE WINDOW: {window_open.strftime('%H:%M')}–{window_end.strftime('%H:%M')} UTC | {mins_elapsed}m elapsed, {mins_remaining}m remaining
 This is the CURRENT active window. Your decision will be traded on this window only.
 
 Current BTC price: ${btc_price:,.2f}
 Kalshi YES (Up) ask: {yes_price:.3f} | NO (Down) ask: {no_price:.3f}
+
+=== MACRO TREND (12h) ===
+{macro_line}
 
 === MARKOV CHAIN ({markov.n_samples} samples) ===
 P(Bull→Bull): {markov.bull_persistence:.3f}  |  P(Bear→Bear): {markov.bear_persistence:.3f}
@@ -89,6 +103,7 @@ def query_claude(
     markov: MarkovResult,
     mc: MCResult,
     smc: SMCResult,
+    macro: MacroResult,
     yes_price: float,
     no_price: float,
     window_open: datetime,
@@ -96,7 +111,10 @@ def query_claude(
 ) -> TradeDecision:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    user_msg = _build_user_message(btc_price, markov, mc, smc, yes_price, no_price, window_open, window_end)
+    user_msg = _build_user_message(
+        btc_price, markov, mc, smc, macro,
+        yes_price, no_price, window_open, window_end,
+    )
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
