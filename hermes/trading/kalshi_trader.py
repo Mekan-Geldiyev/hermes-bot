@@ -30,7 +30,8 @@ async def place_kalshi_order(
     confidence: float,
     max_usdc: float,
 ) -> OrderResult:
-    from hermes.paper_trader import kelly_size, get_balance
+    from hermes.paper_trader import kelly_size
+    from hermes.config import ACCOUNT_SIZE_USDC
 
     # cost_price = what we actually pay per contract (for sizing)
     # yes_price  = the YES-side price sent to the API (V2 quotes everything in YES)
@@ -43,15 +44,19 @@ async def place_kalshi_order(
         cost_price  = market.no_ask
         yes_price   = round(1.0 - market.no_ask, 6)
 
-    bal   = get_balance()
-    size  = kelly_size(confidence, cost_price, bal)
+    # Use configured account size for live sizing (paper ledger balance drifts
+    # from the real Kalshi balance and can cause undersizing at low balances).
+    size  = kelly_size(confidence, cost_price, ACCOUNT_SIZE_USDC)
     size  = min(size, max_usdc)
-    count = int(size / cost_price) if cost_price > 0 else 0
+    # Guarantee at least 1 contract whenever Kelly sees positive edge.
+    # kelly_size returns 0 only when confidence <= price (no edge), so if
+    # size > 0 there is genuine positive EV and a 1-contract floor is safe.
+    count = max(1, int(size / cost_price)) if size > 0 and cost_price > 0 else 0
 
     if count < 1:
         return OrderResult(
             success=False, direction=direction, price=cost_price,
-            amount_usdc=size, error="size too small (< 1 contract)",
+            amount_usdc=size, error="no edge (confidence <= market price)",
         )
 
     path = "/trade-api/v2/portfolio/events/orders"
