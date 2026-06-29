@@ -58,7 +58,7 @@ async def place_kalshi_order(
     body = {
         "ticker":                     market.ticker,
         "side":                       side,
-        "count":                      f"{count}.00",
+        "count":                      count,
         "price":                      f"{yes_price:.4f}",
         "time_in_force":              "immediate_or_cancel",
         "self_trade_prevention_type": "taker_at_cross",
@@ -74,13 +74,23 @@ async def place_kalshi_order(
             ) as resp:
                 data = await resp.json()
 
+        print(f"[Kalshi] API response ({resp.status}): {data}")
+
         if resp.status in (200, 201):
+            order        = data.get("order", data)  # V2 wraps in "order" key
+            order_id     = order.get("order_id", "")
+            filled_count = int(order.get("filled_count", 0))
+            if filled_count == 0:
+                return OrderResult(
+                    success=False, direction=direction, price=cost_price,
+                    amount_usdc=size, error=f"IOC cancelled — 0 contracts filled (orderbook too thin at {yes_price:.4f})",
+                )
             return OrderResult(
                 success=True,
                 direction=direction,
                 price=cost_price,
-                amount_usdc=size,
-                order_id=data.get("order_id", ""),
+                amount_usdc=filled_count * cost_price,
+                order_id=order_id,
             )
         return OrderResult(
             success=False, direction=direction, price=cost_price,
