@@ -82,9 +82,10 @@ async def place_kalshi_order(
         print(f"[Kalshi] API response ({resp.status}): {data}")
 
         if resp.status in (200, 201):
-            order        = data.get("order", data)  # V2 wraps in "order" key
+            order        = data.get("order", data)  # some responses wrap in "order" key, some are flat
             order_id     = order.get("order_id", "")
-            filled_count = int(order.get("filled_count", 0))
+            # Kalshi returns "fill_count" (not "filled_count"), as a decimal string e.g. "3.00"
+            filled_count = int(float(order.get("fill_count", order.get("filled_count", 0))))
             if filled_count == 0:
                 return OrderResult(
                     success=False, direction=direction, price=cost_price,
