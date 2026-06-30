@@ -63,7 +63,7 @@ async def place_kalshi_order(
     body = {
         "ticker":                     market.ticker,
         "side":                       side,
-        "count":                      count,
+        "count":                      str(count),
         "price":                      f"{yes_price:.4f}",
         "time_in_force":              "immediate_or_cancel",
         "self_trade_prevention_type": "taker_at_cross",
