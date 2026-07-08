@@ -12,10 +12,13 @@ KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH")
 
 MAX_TRADE_USDC           = float(os.getenv("MAX_TRADE_USDC", "50"))
 
-# Floor only — ceiling removed after live HighConfLog showed 3/3 wins at >=0.71.
-# The original >=0.70 audit (28.6% win rate) was a small stale sample from a
-# different BTC regime. Tune via .env without a code change.
+# Confidence band: only trade when MIN <= conf < MAX.
+# 57-trade audit: conf=0.63 floor → 57% WR / +$37; conf 0.64-0.72 → 25% WR / -$23;
+# conf 0.73+ → 33% WR / -$10. High confidence correlates with trend exhaustion, not
+# continuation, on this timeframe. Signals above the ceiling are logged to
+# high_confidence_log.json for monitoring but never traded.
 MIN_TRADE_CONFIDENCE = float(os.getenv("MIN_TRADE_CONFIDENCE", "0.63"))
+MAX_TRADE_CONFIDENCE = float(os.getenv("MAX_TRADE_CONFIDENCE", "0.70"))
 
 # Email alerts
 EMAIL_FROM         = os.getenv("EMAIL_FROM", "")

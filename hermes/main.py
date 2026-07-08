@@ -26,6 +26,7 @@ from hermes.config import (
     MONTE_CARLO_PATHS,
     MONTE_CARLO_STEPS,
     MIN_TRADE_CONFIDENCE,
+    MAX_TRADE_CONFIDENCE,
     MAX_TRADE_USDC,
     MACRO_VETO_PCT,
     PAPER_TRADE,
@@ -231,6 +232,51 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
             f"⚪ <b>LOW-CONFIDENCE SKIP</b> — conf={decision.confidence:.0%} (< {MIN_TRADE_CONFIDENCE:.0%} floor)\n"
             f"Market: {market.title}\n"
             f"Direction: {decision.direction}  |  Logged for tracking, not traded."
+        )
+        return
+
+    # ── Confidence ceiling ──────────────────────────────────────────────────────
+    if decision.confidence >= MAX_TRADE_CONFIDENCE:
+        from hermes.signal_log import record_high_confidence_signal
+        pct_5m  = mom_pct
+        pct_15m = _pct_change_over(prices, 15)
+        n_bars  = _bars_since_state_flip(prices)
+        record_high_confidence_signal(
+            market_title=market.title,
+            ticker=market.ticker,
+            close_time=market.close_time,
+            direction=decision.direction,
+            entry_btc_price=feed.last_price,
+            yes_price=market.yes_ask,
+            no_price=market.no_ask,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning,
+            markov_signal=markov.signal,
+            markov_current_state=markov.current_state,
+            markov_persistence=markov.persistence,
+            markov_bull_persistence=markov.bull_persistence,
+            markov_bear_persistence=markov.bear_persistence,
+            markov_n_samples=markov.n_samples,
+            mc_signal=mc.signal,
+            mc_bull_prob=mc.bull_prob,
+            mc_bear_prob=mc.bear_prob,
+            mc_n_paths=mc.n_paths,
+            mc_n_steps=mc.n_steps,
+            smc_bos=smc.bos if smc else None,
+            smc_liquidity_sweep=smc.liquidity_sweep if smc else None,
+            smc_fvg=smc.fvg if smc else None,
+            smc_signal=smc.signal if smc else None,
+            smc_patterns_found=smc.patterns_found if smc else 0,
+            pct_change_5m=pct_5m,
+            pct_change_15m=pct_15m,
+            bars_since_state_flip=n_bars,
+            seconds_since_state_flip=n_bars * TICK_INTERVAL_SECONDS if n_bars else None,
+        )
+        await send(
+            f"🔵 <b>HIGH-CONF SKIP</b> — conf={decision.confidence:.0%} (>= {MAX_TRADE_CONFIDENCE:.0%} ceiling)\n"
+            f"Market: {market.title}\n"
+            f"Direction: {decision.direction}  |  Logged to high_confidence_log, not traded.\n"
+            f"Reason: 57-trade audit shows conf 0.64-0.72 = 25% WR / conf 0.73+ = 33% WR."
         )
         return
 
