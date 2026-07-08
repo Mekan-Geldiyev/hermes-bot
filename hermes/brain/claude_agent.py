@@ -27,10 +27,11 @@ class TradeDecision:
 
 _SYSTEM_PROMPT = """You are Hermes, a quantitative trading brain for Kalshi BTC Up/Down markets.
 You receive signal groups computed from live Binance microstructure data:
-1. Markov chain persistence (momentum signal)
-2. Monte Carlo path simulation (probabilistic forward projection)
+1. Markov chain persistence (momentum signal over ~16 min of 5-second bars)
+2. Monte Carlo path simulation (probabilistic forward projection from Markov)
 3. Smart Money Concepts: BOS, Liquidity Sweep, FVG (structural/institutional signals)
 4. Macro trend: 12-hour BTC price change (regime context)
+5. Short-term momentum: 5-minute BTC price change (recent micro-direction)
 
 Your job is to synthesise these signals and output a single JSON trading decision.
 The market pays $1 if BTC closes higher (BULL) or lower (BEAR) than open in a 15-minute window.
@@ -44,6 +45,17 @@ Strict rules:
 - Output NO_TRADE if Markov and MC disagree, or neither condition (a) nor (b) is met.
 - Macro context: a 12h move strongly opposing your direction (e.g. +1.5% when you want BEAR)
   is a significant red flag. Lower your confidence or output NO_TRADE if macro contradicts.
+
+CRITICAL — Short-term momentum (mean reversion):
+- Markov/MC capture the trend of the last ~16 minutes. But the 15-min market resolves on
+  the FINAL price vs the OPEN — a BTC dip early followed by recovery still resolves BULL.
+- If 5m momentum is BULL (price recovering) while Markov/MC say BEAR:
+    • Weak opposing recovery (+0.05% to +0.12%): lower confidence to 0.63 or NO_TRADE.
+    • Strong opposing recovery (>+0.12%): output BULL if SMC or persistence supports it,
+      otherwise NO_TRADE. Do NOT blindly follow Markov into an active recovery.
+- If 5m momentum CONFIRMS Markov/MC direction, treat as additional evidence (raise confidence slightly).
+- NEUTRAL 5m momentum: no adjustment needed.
+
 - Confidence must reflect genuine edge, not optimism. 0.5 = coin flip.
 - Be terse. Reasoning ≤ 2 sentences.
 
@@ -61,6 +73,8 @@ def _build_user_message(
     no_price: float,
     window_open: datetime,
     window_end: datetime,
+    short_momentum_pct: float = 0.0,
+    short_momentum_dir: str = "NEUTRAL",
 ) -> str:
     now = datetime.now(window_end.tzinfo)
     mins_elapsed   = int((now - window_open).total_seconds() // 60)
@@ -95,6 +109,10 @@ Liquidity Sweep:  {smc.liquidity_sweep or "NONE"}
 Fair Value Gap:   {smc.fvg or "NONE"}
 SMC consensus:    {smc.signal or "NONE"} ({smc.patterns_found}/3 patterns active)
 
+=== SHORT-TERM MOMENTUM (5m price change) ===
+5m change: {short_momentum_pct:+.3f}%  |  Direction: {short_momentum_dir}
+(Positive = BTC recovering UP in last 5 min; negative = continuing DOWN)
+
 Based on these signals, output your JSON trading decision."""
 
 
@@ -108,12 +126,16 @@ def query_claude(
     no_price: float,
     window_open: datetime,
     window_end: datetime,
+    short_momentum_pct: float = 0.0,
+    short_momentum_dir: str = "NEUTRAL",
 ) -> TradeDecision:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     user_msg = _build_user_message(
         btc_price, markov, mc, smc, macro,
         yes_price, no_price, window_open, window_end,
+        short_momentum_pct=short_momentum_pct,
+        short_momentum_dir=short_momentum_dir,
     )
 
     message = client.messages.create(

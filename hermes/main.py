@@ -11,9 +11,15 @@ Lifecycle per 15-minute Kalshi window:
   7. Periodically resolve completed trades using Kalshi result field
 """
 import asyncio
+import time
 import traceback
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
+
+# Circuit breaker: tracks (timestamp, direction) of resolved LOSS trades in-process.
+# Shared between trade_resolver (writer) and analyse_and_trade (reader).
+_recent_losses: deque = deque(maxlen=20)
 
 from hermes.config import (
     MARKOV_PERSISTENCE_THRESHOLD,
@@ -115,6 +121,21 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         f"Converge={converge}/{quant_direction}"
     )
 
+    # ── Circuit breaker ───────────────────────────────────────────────────────
+    cutoff = time.time() - 90 * 60  # 90-minute window
+    recent_loss_count = sum(1 for ts, _ in _recent_losses if ts > cutoff)
+    if recent_loss_count >= 2:
+        print(f"[Hermes] CIRCUIT BREAKER — {recent_loss_count} losses in last 90m, skipping cycle")
+        await send(
+            f"⏸ <b>CIRCUIT BREAKER</b> — {recent_loss_count} losses in last 90 min\n"
+            f"Market: {market.title}\nSkipping this cycle."
+        )
+        return
+
+    # ── Short-term momentum (5-minute price recovery check) ───────────────────
+    mom_pct = _pct_change_over(prices, 5) or 0.0
+    mom_dir = "BULL" if mom_pct > 0.08 else "BEAR" if mom_pct < -0.08 else "NEUTRAL"
+
     # ── Gate: quant convergence required before Claude is ever called ──────────
     # No trade can fire without convergence, so querying Claude on a non-
     # converged cycle is a wasted API call. Check this first.
@@ -152,6 +173,8 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
         no_price=market.no_ask,
         window_open=window_open,
         window_end=window_end,
+        short_momentum_pct=mom_pct,
+        short_momentum_dir=mom_dir,
     )
 
     print(f"[Claude] dir={decision.direction} conf={decision.confidence:.2f} | {decision.reasoning}")
@@ -208,6 +231,25 @@ async def analyse_and_trade(feed: BinanceFeed, market: KalshiMarket, window_open
             f"⚪ <b>LOW-CONFIDENCE SKIP</b> — conf={decision.confidence:.0%} (< {MIN_TRADE_CONFIDENCE:.0%} floor)\n"
             f"Market: {market.title}\n"
             f"Direction: {decision.direction}  |  Logged for tracking, not traded."
+        )
+        return
+
+    # ── Value filter: avoid entering when market odds strongly oppose direction ──
+    # Data: no_price < 0.44 for BEAR = 25% WR and -$10 total. Market is right.
+    if decision.direction == "BEAR" and market.no_ask < 0.44:
+        print(f"[Hermes] VALUE FILTER — BEAR skipped: no_price={market.no_ask:.3f} < 0.44 (market >56% UP)")
+        await send(
+            f"⛔ <b>VALUE FILTER</b> — BEAR skipped\n"
+            f"Market: {market.title}\n"
+            f"NO ask ({market.no_ask:.3f}) below 0.44 floor — market pricing >56% UP, no edge."
+        )
+        return
+    if decision.direction == "BULL" and market.yes_ask < 0.44:
+        print(f"[Hermes] VALUE FILTER — BULL skipped: yes_price={market.yes_ask:.3f} < 0.44 (market >56% DOWN)")
+        await send(
+            f"⛔ <b>VALUE FILTER</b> — BULL skipped\n"
+            f"Market: {market.title}\n"
+            f"YES ask ({market.yes_ask:.3f}) below 0.44 floor — market pricing >56% DOWN, no edge."
         )
         return
 
@@ -314,6 +356,8 @@ async def trade_resolver(feed: BinanceFeed):
             from hermes.paper_trader import resolve_pending, get_balance
             resolved = await resolve_pending(feed.last_price)
             for t in resolved:
+                if t["result"] == "LOSS":
+                    _recent_losses.append((time.time(), t["direction"]))
                 icon    = "✅" if t["result"] == "WIN" else "❌"
                 pnl_str = f"+${t['pnl']:.2f}" if t["pnl"] >= 0 else f"-${abs(t['pnl']):.2f}"
                 bal     = get_balance()
